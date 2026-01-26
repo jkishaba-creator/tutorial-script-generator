@@ -136,6 +136,7 @@ export async function POST(request: NextRequest) {
           const model = genAI.getGenerativeModel({ model: modelName });
 
           // Generate audio using Gemini TTS SDK
+          // Using 'as any' because SDK types don't include responseModalities/speechConfig yet
           const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: text }] }],
             generationConfig: {
@@ -147,7 +148,7 @@ export async function POST(request: NextRequest) {
                   },
                 },
               },
-            },
+            } as any,
           });
 
           const response = await result.response;
