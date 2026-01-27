@@ -157,14 +157,15 @@ export async function POST(request: NextRequest) {
       let lastError: Error | null = null;
 
       const chunks = chunkText(text, 400);
-      const ttsConfig: Record<string, unknown> = {
+
+      const makeTtsConfig = (): Record<string, unknown> => ({
         responseModalities: ["AUDIO"],
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: "Charon" },
           },
         },
-      };
+      });
 
       for (const modelName of modelsToTry) {
         try {
@@ -174,7 +175,7 @@ export async function POST(request: NextRequest) {
           for (const chunk of chunks) {
             const result = await model.generateContent({
               contents: [{ role: "user", parts: [{ text: chunk }] }],
-              generationConfig: ttsConfig as any,
+              generationConfig: makeTtsConfig() as any,
             });
             const response = await result.response;
             const parts = response.candidates?.[0]?.content?.parts || [];
