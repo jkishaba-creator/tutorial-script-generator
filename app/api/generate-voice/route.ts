@@ -144,13 +144,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Use the SDK approach - TTS models may only work with SDK, not REST API
       const genAI = new GoogleGenerativeAI(apiKey);
-      
-      // Use single model for consistent Charon voice (no fallback to avoid random voices)
-      const modelName = "gemini-2.5-flash-tts";
-      const model = genAI.getGenerativeModel({ model: modelName });
-
       const chunks = chunkText(text, 400);
 
       const makeTtsConfig = (): Record<string, unknown> => ({
@@ -162,30 +156,53 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      const pcmBuffers: Buffer[] = [];
+      // Try TTS models in order (gemini-2.5-flash-tts often 404s; preview may work)
+      const modelsToTry = [
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-flash-tts",
+        "gemini-2.5-flash-lite-preview-tts",
+      ];
 
-      for (const chunk of chunks) {
-        const result = await model.generateContent({
-          contents: [{ role: "user", parts: [{ text: chunk }] }],
-          generationConfig: makeTtsConfig() as any,
-        });
-        const response = await result.response;
-        const parts = response.candidates?.[0]?.content?.parts || [];
-        const audioPart = parts.find((part: any) => part.inlineData);
-        if (!audioPart?.inlineData?.data) {
-          throw new Error("No audio received from Gemini TTS for chunk");
+      let lastError: Error | null = null;
+
+      for (const modelName of modelsToTry) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const pcmBuffers: Buffer[] = [];
+
+          for (const chunk of chunks) {
+            const result = await model.generateContent({
+              contents: [{ role: "user", parts: [{ text: chunk }] }],
+              generationConfig: makeTtsConfig() as any,
+            });
+            const response = await result.response;
+            const parts = response.candidates?.[0]?.content?.parts || [];
+            const audioPart = parts.find((part: any) => part.inlineData);
+            if (!audioPart?.inlineData?.data) throw new Error("No audio for chunk");
+            pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
+          }
+
+          const combinedPcm = Buffer.concat(pcmBuffers);
+          const wav = pcmToWav(combinedPcm, 24000, 1, 16);
+          return new NextResponse(new Uint8Array(wav), {
+            headers: {
+              "Content-Type": "audio/wav",
+              "Content-Disposition": 'attachment; filename="audio.wav"',
+            },
+          });
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.error(`Gemini TTS ${modelName}:`, lastError.message);
+          continue;
         }
-        pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
       }
 
-      const combinedPcm = Buffer.concat(pcmBuffers);
-      const wav = pcmToWav(combinedPcm, 24000, 1, 16);
-      return new NextResponse(new Uint8Array(wav), {
-        headers: {
-          "Content-Type": "audio/wav",
-          "Content-Disposition": 'attachment; filename="audio.wav"',
+      return NextResponse.json(
+        {
+          error: `Gemini TTS failed. Tried: ${modelsToTry.join(", ")}. Last error: ${lastError?.message ?? "unknown"}.`,
         },
-      });
+        { status: 500 }
+      );
     }
 
     return NextResponse.json(
