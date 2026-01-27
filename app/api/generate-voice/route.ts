@@ -147,14 +147,9 @@ export async function POST(request: NextRequest) {
       // Use the SDK approach - TTS models may only work with SDK, not REST API
       const genAI = new GoogleGenerativeAI(apiKey);
       
-      // Try different TTS models in order
-      const modelsToTry = [
-        "gemini-2.5-flash-tts",
-        "gemini-2.5-flash-preview-tts",
-        "gemini-2.5-flash-lite-preview-tts"
-      ];
-
-      let lastError: Error | null = null;
+      // Use single model for consistent Charon voice (no fallback to avoid random voices)
+      const modelName = "gemini-2.5-flash-tts";
+      const model = genAI.getGenerativeModel({ model: modelName });
 
       const chunks = chunkText(text, 400);
 
@@ -167,45 +162,30 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      for (const modelName of modelsToTry) {
-        try {
-          const model = genAI.getGenerativeModel({ model: modelName });
-          const pcmBuffers: Buffer[] = [];
+      const pcmBuffers: Buffer[] = [];
 
-          for (const chunk of chunks) {
-            const result = await model.generateContent({
-              contents: [{ role: "user", parts: [{ text: chunk }] }],
-              generationConfig: makeTtsConfig() as any,
-            });
-            const response = await result.response;
-            const parts = response.candidates?.[0]?.content?.parts || [];
-            const audioPart = parts.find((part: any) => part.inlineData);
-            if (!audioPart?.inlineData?.data) throw new Error(`No audio for chunk`);
-            pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
-          }
-
-          const combinedPcm = Buffer.concat(pcmBuffers);
-          const wav = pcmToWav(combinedPcm, 24000, 1, 16);
-          return new NextResponse(new Uint8Array(wav), {
-            headers: {
-              "Content-Type": "audio/wav",
-              "Content-Disposition": 'attachment; filename="audio.wav"',
-            },
-          });
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
-          console.error(`Failed with model ${modelName}:`, lastError.message);
-          continue;
+      for (const chunk of chunks) {
+        const result = await model.generateContent({
+          contents: [{ role: "user", parts: [{ text: chunk }] }],
+          generationConfig: makeTtsConfig() as any,
+        });
+        const response = await result.response;
+        const parts = response.candidates?.[0]?.content?.parts || [];
+        const audioPart = parts.find((part: any) => part.inlineData);
+        if (!audioPart?.inlineData?.data) {
+          throw new Error("No audio received from Gemini TTS for chunk");
         }
+        pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
       }
 
-      // If all models failed, return error
-      return NextResponse.json(
-        {
-          error: `Gemini TTS failed with all models. Last error: ${lastError?.message || "Unknown error"}. Gemini TTS may not be available in your region or API version.`,
+      const combinedPcm = Buffer.concat(pcmBuffers);
+      const wav = pcmToWav(combinedPcm, 24000, 1, 16);
+      return new NextResponse(new Uint8Array(wav), {
+        headers: {
+          "Content-Type": "audio/wav",
+          "Content-Disposition": 'attachment; filename="audio.wav"',
         },
-        { status: 500 }
-      );
+      });
     }
 
     return NextResponse.json(

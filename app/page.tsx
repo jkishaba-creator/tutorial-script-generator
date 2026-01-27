@@ -114,14 +114,11 @@ export default function Home() {
       return;
     }
 
-    // Format for Gemini TTS: ellipses on their own lines between sentences
+    // Format for Gemini TTS: two lines of ellipses between sentences
     // so the AI takes a distinct "breath" between every thought.
     // Find every sentence ending (. or ?) followed by space or newline.
-    // Replace with: .\n...\n or ?\n...\n
-    let formatted = script.replace(/([.?])\s+/g, "$1\n...\n");
-
-    // Clean up duplicate ellipsis lines
-    formatted = formatted.replace(/(\n\.\.\.\n)+/g, "\n...\n");
+    // Replace with: .\n...\n...\n or ?\n...\n...\n
+    const formatted = script.replace(/([.?])\s+/g, "$1\n...\n...\n");
 
     setScript(formatted.trim());
   };
