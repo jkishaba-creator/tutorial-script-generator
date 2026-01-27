@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, Play, Download, FileText, Mic } from "lucide-react";
 
 export default function Home() {
+  const [passwordInput, setPasswordInput] = useState("");
+  const [isAuthorized, setIsAuthorized] = useState(false);
   const [title, setTitle] = useState("");
   const [minWordCount, setMinWordCount] = useState(1500);
   const [maxWordCount, setMaxWordCount] = useState(1700);
@@ -16,6 +18,26 @@ export default function Home() {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("ai-mastery-auth");
+    if (stored === "true") {
+      setIsAuthorized(true);
+    }
+  }, []);
+
+  const handlePasswordSubmit = () => {
+    if (passwordInput === "AI_Mastery_") {
+      setIsAuthorized(true);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("ai-mastery-auth", "true");
+      }
+      setError(null);
+    } else {
+      setError("Incorrect password");
+    }
+  };
 
   const handleGenerateScript = async () => {
     if (!title.trim() || !instructions.trim()) {
@@ -122,6 +144,46 @@ export default function Home() {
 
     setScript(formatted.trim());
   };
+
+  if (!isAuthorized) {
+    return (
+      <main className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+          <h1 className="text-2xl font-bold text-center">Video Script Generator</h1>
+          <p className="text-sm text-gray-300 text-center">
+            This app is password protected.
+          </p>
+          {error && (
+            <div className="p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+              {error}
+            </div>
+          )}
+          <div className="space-y-2">
+            <label
+              htmlFor="access-password"
+              className="block text-sm font-medium text-gray-200"
+            >
+              Enter access password
+            </label>
+            <input
+              id="access-password"
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+              placeholder="Password"
+            />
+          </div>
+          <button
+            onClick={handlePasswordSubmit}
+            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+          >
+            Unlock
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gray-900 text-gray-100 p-4 md:p-8">
