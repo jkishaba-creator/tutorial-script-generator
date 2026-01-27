@@ -1,6 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+/** Split text into chunks at sentence boundaries. Never splits mid-sentence. */
+function chunkText(text: string, maxWords = 400): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+
+  // Split on sentence boundaries: . ? ! followed by space, or newlines
+  const sentences = cleaned.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentWords = 0;
+
+  for (const sent of sentences) {
+    const w = sent.split(/\s+/).filter(Boolean).length;
+    if (currentWords + w > maxWords && current.length > 0) {
+      chunks.push(current.join(" "));
+      current = [];
+      currentWords = 0;
+    }
+    current.push(sent);
+    currentWords += w;
+  }
+  if (current.length > 0) chunks.push(current.join(" "));
+  return chunks;
+}
+
 /** Create a WAV file buffer from raw PCM (16-bit, mono). Gemini TTS returns PCM at 24kHz. */
 function pcmToWav(pcm: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16): Buffer {
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
@@ -131,48 +156,44 @@ export async function POST(request: NextRequest) {
 
       let lastError: Error | null = null;
 
+      const chunks = chunkText(text, 400);
+      const ttsConfig: Record<string, unknown> = {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: "Charon" },
+          },
+        },
+      };
+
       for (const modelName of modelsToTry) {
         try {
           const model = genAI.getGenerativeModel({ model: modelName });
+          const pcmBuffers: Buffer[] = [];
 
-          // Generate audio using Gemini TTS SDK (config as any - SDK types lack TTS fields)
-          const ttsConfig: Record<string, unknown> = {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: "Charon" },
-              },
-            },
-          };
-          const result = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: text }] }],
-            generationConfig: ttsConfig as any,
-          });
-
-          const response = await result.response;
-          
-          // Extract audio data from response
-          const parts = response.candidates?.[0]?.content?.parts || [];
-          const audioPart = parts.find((part: any) => part.inlineData);
-          
-          if (audioPart?.inlineData?.data) {
-            // Gemini TTS returns raw PCM (LINEAR16) at 24kHz, 1ch, 16-bit — no WAV header.
-            // Serving it as "audio/mpeg" causes wrong playback (e.g. ~2hr for 8min script).
-            // Wrap PCM in a WAV header and return audio/wav.
-            const pcm = Buffer.from(audioPart.inlineData.data, "base64");
-            const wav = pcmToWav(pcm, 24000, 1, 16);
-
-            return new NextResponse(new Uint8Array(wav), {
-              headers: {
-                "Content-Type": "audio/wav",
-                "Content-Disposition": 'attachment; filename="audio.wav"',
-              },
+          for (const chunk of chunks) {
+            const result = await model.generateContent({
+              contents: [{ role: "user", parts: [{ text: chunk }] }],
+              generationConfig: ttsConfig as any,
             });
+            const response = await result.response;
+            const parts = response.candidates?.[0]?.content?.parts || [];
+            const audioPart = parts.find((part: any) => part.inlineData);
+            if (!audioPart?.inlineData?.data) throw new Error(`No audio for chunk`);
+            pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
           }
+
+          const combinedPcm = Buffer.concat(pcmBuffers);
+          const wav = pcmToWav(combinedPcm, 24000, 1, 16);
+          return new NextResponse(new Uint8Array(wav), {
+            headers: {
+              "Content-Type": "audio/wav",
+              "Content-Disposition": 'attachment; filename="audio.wav"',
+            },
+          });
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
           console.error(`Failed with model ${modelName}:`, lastError.message);
-          // Continue to next model
           continue;
         }
       }

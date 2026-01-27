@@ -114,49 +114,16 @@ export default function Home() {
       return;
     }
 
-    // Format for Gemini TTS: poem-style layout to prevent speeding up
-    // 1. Normalize whitespace
-    let s = script.replace(/\s+/g, " ").trim();
+    // Format for Gemini TTS: ellipses on their own lines between sentences
+    // so the AI takes a distinct "breath" between every thought.
+    // Find every sentence ending (. or ?) followed by space or newline.
+    // Replace with: .\n...\n or ?\n...\n
+    let formatted = script.replace(/([.?])\s+/g, "$1\n...\n");
 
-    // 2. Split sentences on . ! ? with double newline between them
-    s = s.replace(/([.!?])\s+/g, "$1\n\n");
+    // Clean up duplicate ellipsis lines
+    formatted = formatted.replace(/(\n\.\.\.\n)+/g, "\n...\n");
 
-    const blocks = s.split(/\n\n+/);
-    const result: string[] = [];
-
-    for (const block of blocks) {
-      const trimmed = block.trim();
-      if (!trimmed) continue;
-
-      let processed: string;
-
-      // 3. Micro-brakes: long sentences (>15 words) with comma -> comma + newline
-      const words = trimmed.split(/\s+/).filter(Boolean);
-      if (words.length > 15 && trimmed.includes(",")) {
-        processed = trimmed.replace(/,\s*/g, ",\n");
-      } else {
-        processed = trimmed;
-      }
-
-      // 4. Ensure no line has more than 20 words
-      const lines = processed.split("\n");
-      const outLines: string[] = [];
-
-      for (const line of lines) {
-        const w = line.trim().split(/\s+/).filter(Boolean);
-        if (w.length <= 20) {
-          outLines.push(line.trim());
-        } else {
-          for (let i = 0; i < w.length; i += 20) {
-            outLines.push(w.slice(i, i + 20).join(" "));
-          }
-        }
-      }
-
-      result.push(outLines.join("\n"));
-    }
-
-    setScript(result.join("\n\n").trim());
+    setScript(formatted.trim());
   };
 
   return (
