@@ -114,18 +114,49 @@ export default function Home() {
       return;
     }
 
-    // Find sentence endings (periods, question marks, exclamation marks)
-    // and insert a line break and single ellipsis after them
-    // First, normalize multiple spaces/newlines to single spaces
-    let formatted = script.replace(/\s+/g, ' ');
-    
-    // Then add ellipsis after sentence endings
-    formatted = formatted.replace(/([.!?])\s/g, '$1\n...\n');
-    
-    // Clean up any duplicate ellipsis lines that might have been created
-    formatted = formatted.replace(/\n\.\.\.\n\.\.\.\n/g, '\n...\n');
-    
-    setScript(formatted.trim());
+    // Format for Gemini TTS: poem-style layout to prevent speeding up
+    // 1. Normalize whitespace
+    let s = script.replace(/\s+/g, " ").trim();
+
+    // 2. Split sentences on . ! ? with double newline between them
+    s = s.replace(/([.!?])\s+/g, "$1\n\n");
+
+    const blocks = s.split(/\n\n+/);
+    const result: string[] = [];
+
+    for (const block of blocks) {
+      const trimmed = block.trim();
+      if (!trimmed) continue;
+
+      let processed: string;
+
+      // 3. Micro-brakes: long sentences (>15 words) with comma -> comma + newline
+      const words = trimmed.split(/\s+/).filter(Boolean);
+      if (words.length > 15 && trimmed.includes(",")) {
+        processed = trimmed.replace(/,\s*/g, ",\n");
+      } else {
+        processed = trimmed;
+      }
+
+      // 4. Ensure no line has more than 20 words
+      const lines = processed.split("\n");
+      const outLines: string[] = [];
+
+      for (const line of lines) {
+        const w = line.trim().split(/\s+/).filter(Boolean);
+        if (w.length <= 20) {
+          outLines.push(line.trim());
+        } else {
+          for (let i = 0; i < w.length; i += 20) {
+            outLines.push(w.slice(i, i + 20).join(" "));
+          }
+        }
+      }
+
+      result.push(outLines.join("\n"));
+    }
+
+    setScript(result.join("\n\n").trim());
   };
 
   return (
