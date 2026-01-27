@@ -135,22 +135,19 @@ export async function POST(request: NextRequest) {
         try {
           const model = genAI.getGenerativeModel({ model: modelName });
 
-          // Generate audio using Gemini TTS SDK
-          // Cast to 'any' because SDK types don't include responseModalities/speechConfig yet
-          const ttsRequest = {
-            contents: [{ role: "user", parts: [{ text: text }] }],
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: "Charon", // Voice options: Aoede, Charon, Fenrir, Kore, Puck, etc.
-                  },
-                },
+          // Generate audio using Gemini TTS SDK (config as any - SDK types lack TTS fields)
+          const ttsConfig: Record<string, unknown> = {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: "Charon" },
               },
             },
           };
-          const result = await model.generateContent(ttsRequest as any);
+          const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: text }] }],
+            generationConfig: ttsConfig as any,
+          });
 
           const response = await result.response;
           
@@ -165,7 +162,7 @@ export async function POST(request: NextRequest) {
             const pcm = Buffer.from(audioPart.inlineData.data, "base64");
             const wav = pcmToWav(pcm, 24000, 1, 16);
 
-            return new NextResponse(wav, {
+            return new NextResponse(new Uint8Array(wav), {
               headers: {
                 "Content-Type": "audio/wav",
                 "Content-Disposition": 'attachment; filename="audio.wav"',
