@@ -46,7 +46,7 @@ function pcmToWav(pcm: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSampl
 
 export async function POST(request: NextRequest) {
   try {
-    const { text, provider = "elevenlabs" } = await request.json();
+    const { text, provider = "gemini" } = await request.json();
 
     if (!text || typeof text !== "string") {
       return NextResponse.json(

@@ -12,7 +12,7 @@ export default function Home() {
   const [script, setScript] = useState("");
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioFormat, setAudioFormat] = useState<"mp3" | "wav">("mp3");
-  const [voiceProvider, setVoiceProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
+  const [voiceProvider, setVoiceProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
