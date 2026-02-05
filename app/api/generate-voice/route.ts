@@ -151,11 +151,18 @@ export async function POST(request: NextRequest) {
           });
           const response = await result.response;
           const parts = response.candidates?.[0]?.content?.parts || [];
-          const audioPart = parts.find((part: any) => part.inlineData);
-          if (!audioPart?.inlineData?.data) throw new Error("No audio generated");
           
-          const pcmBuffer = Buffer.from(audioPart.inlineData.data, "base64");
-          const wav = pcmToWav(pcmBuffer, 24000, 1, 16);
+          // Collect ALL audio parts (not just the first one) to maintain voice consistency
+          const audioParts = parts.filter((part: any) => part.inlineData?.data);
+          if (audioParts.length === 0) throw new Error("No audio generated");
+          
+          // Concatenate all audio parts to ensure consistent voice throughout
+          const pcmBuffers = audioParts.map((part: any) => 
+            Buffer.from(part.inlineData.data, "base64")
+          );
+          const combinedPcmBuffer = Buffer.concat(pcmBuffers);
+          
+          const wav = pcmToWav(combinedPcmBuffer, 24000, 1, 16);
           return new NextResponse(new Uint8Array(wav), {
             headers: {
               "Content-Type": "audio/wav",
