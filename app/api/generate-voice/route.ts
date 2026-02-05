@@ -1,31 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-/** Split text into chunks at sentence boundaries. Never splits mid-sentence. */
-function chunkText(text: string, maxWords = 400): string[] {
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (!cleaned) return [];
-
-  // Split on sentence boundaries: . ? ! followed by space, or newlines
-  const sentences = cleaned.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
-  const chunks: string[] = [];
-  let current: string[] = [];
-  let currentWords = 0;
-
-  for (const sent of sentences) {
-    const w = sent.split(/\s+/).filter(Boolean).length;
-    if (currentWords + w > maxWords && current.length > 0) {
-      chunks.push(current.join(" "));
-      current = [];
-      currentWords = 0;
-    }
-    current.push(sent);
-    currentWords += w;
-  }
-  if (current.length > 0) chunks.push(current.join(" "));
-  return chunks;
-}
-
 /** Create a WAV file buffer from raw PCM (16-bit, mono). Gemini TTS returns PCM at 24kHz. */
 function pcmToWav(pcm: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16): Buffer {
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
@@ -145,7 +120,6 @@ export async function POST(request: NextRequest) {
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
-      const chunks = chunkText(text, 400);
 
       const makeTtsConfig = (): Record<string, unknown> => ({
         responseModalities: ["AUDIO"],
@@ -156,8 +130,9 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Try TTS models in order (gemini-2.5-flash-tts often 404s; preview may work)
+      // Try TTS models in order (Pro TTS first for higher quality, Flash as fallback)
       const modelsToTry = [
+        "gemini-2.5-pro-tts",
         "gemini-2.5-flash-preview-tts",
         "gemini-2.5-flash-tts",
         "gemini-2.5-flash-lite-preview-tts",
@@ -168,22 +143,19 @@ export async function POST(request: NextRequest) {
       for (const modelName of modelsToTry) {
         try {
           const model = genAI.getGenerativeModel({ model: modelName });
-          const pcmBuffers: Buffer[] = [];
-
-          for (const chunk of chunks) {
-            const result = await model.generateContent({
-              contents: [{ role: "user", parts: [{ text: chunk }] }],
-              generationConfig: makeTtsConfig() as any,
-            });
-            const response = await result.response;
-            const parts = response.candidates?.[0]?.content?.parts || [];
-            const audioPart = parts.find((part: any) => part.inlineData);
-            if (!audioPart?.inlineData?.data) throw new Error("No audio for chunk");
-            pcmBuffers.push(Buffer.from(audioPart.inlineData.data, "base64"));
-          }
-
-          const combinedPcm = Buffer.concat(pcmBuffers);
-          const wav = pcmToWav(combinedPcm, 24000, 1, 16);
+          
+          // Generate audio for the full script in one request
+          const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: text }] }],
+            generationConfig: makeTtsConfig() as any,
+          });
+          const response = await result.response;
+          const parts = response.candidates?.[0]?.content?.parts || [];
+          const audioPart = parts.find((part: any) => part.inlineData);
+          if (!audioPart?.inlineData?.data) throw new Error("No audio generated");
+          
+          const pcmBuffer = Buffer.from(audioPart.inlineData.data, "base64");
+          const wav = pcmToWav(pcmBuffer, 24000, 1, 16);
           return new NextResponse(new Uint8Array(wav), {
             headers: {
               "Content-Type": "audio/wav",
