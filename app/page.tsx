@@ -14,7 +14,7 @@ export default function Home() {
   const [script, setScript] = useState("");
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioFormat, setAudioFormat] = useState<"mp3" | "wav">("mp3");
-  const [voiceProvider, setVoiceProvider] = useState<"elevenlabs" | "gemini">("gemini");
+  const [voiceProvider, setVoiceProvider] = useState<"elevenlabs" | "fish" | "gemini">("gemini");
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -367,11 +367,12 @@ export default function Home() {
                   <select
                     id="voiceProvider"
                     value={voiceProvider}
-                    onChange={(e) => setVoiceProvider(e.target.value as "elevenlabs" | "gemini")}
+                    onChange={(e) => setVoiceProvider(e.target.value as "elevenlabs" | "fish" | "gemini")}
                     className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-white"
                     disabled={isGeneratingAudio || isGeneratingScript}
                   >
                     <option value="elevenlabs">ElevenLabs</option>
+                    <option value="fish">Fish.audio</option>
                     <option value="gemini">Gemini TTS</option>
                   </select>
                 </div>

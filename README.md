@@ -56,6 +56,24 @@ A modern web application that converts HTML instructions into narrated video scr
 - **Body**: `{ text: string }`
 - **Returns**: Audio file (MP3)
 
+## Deploying to Vercel
+
+1. **Push your code** to GitHub (or connect your repo in Vercel).
+
+2. **In Vercel Dashboard** → your project → **Settings** → **Environment Variables**, add:
+
+   | Variable | Required | Description |
+   |----------|----------|-------------|
+   | `GEMINI_API_KEY` | Yes (for script + Gemini TTS) | Google AI Studio API key |
+   | `ELEVENLABS_API_KEY` | If using ElevenLabs | ElevenLabs API key |
+   | `ELEVENLABS_VOICE_ID` | No | ElevenLabs voice ID (optional) |
+   | **`FISH_AUDIO_API_KEY`** | **If using Fish.audio** | **Fish.audio API key** (from [fish.audio](https://fish.audio) dashboard) |
+   | **`FISH_AUDIO_REFERENCE_ID`** | No | **Fish.audio voice model ID** (optional; use a library or custom model ID for a specific voice) |
+
+3. **Redeploy** after adding or changing variables (Vercel → Deployments → ⋮ on latest → Redeploy), or push a new commit.
+
+4. **CLI deploy:** `vercel --prod` from the project root (after `vercel login` and linking the project once).
+
 ## Technologies
 
 - **Next.js 14** (App Router)

@@ -109,6 +109,55 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Handle Fish.audio TTS
+    if (provider === "fish") {
+      const apiKey = process.env.FISH_AUDIO_API_KEY;
+      if (!apiKey) {
+        return NextResponse.json(
+          { error: "FISH_AUDIO_API_KEY is not configured" },
+          { status: 500 }
+        );
+      }
+
+      const referenceId = process.env.FISH_AUDIO_REFERENCE_ID || undefined;
+
+      const body: { text: string; format: string; reference_id?: string } = {
+        text,
+        format: "mp3",
+      };
+      if (referenceId) body.reference_id = referenceId;
+
+      const response = await fetch("https://api.fish.audio/v1/tts", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          model: "s1",
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error("Fish.audio API error:", errorData);
+        return NextResponse.json(
+          {
+            error: `Fish.audio API error: ${response.status} ${response.statusText}`,
+          },
+          { status: response.status }
+        );
+      }
+
+      const audioBuffer = await response.arrayBuffer();
+
+      return new NextResponse(audioBuffer, {
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Content-Disposition": 'attachment; filename="audio.mp3"',
+        },
+      });
+    }
+
     // Handle Gemini TTS
     if (provider === "gemini") {
       const apiKey = process.env.GEMINI_API_KEY;
@@ -185,7 +234,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: "Invalid provider. Use 'elevenlabs' or 'gemini'" },
+      { error: "Invalid provider. Use 'elevenlabs', 'fish', or 'gemini'" },
       { status: 400 }
     );
   } catch (error) {
