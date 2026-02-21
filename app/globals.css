@@ -3,17 +3,125 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 0, 0, 0;
+  --ink-bg: #0c0c0d;
+  --ink-panel: #161618;
+  --ink-border: #262626;
+  --ink-label: #8a8a8b;
+  --ink-input: #e2e2e2;
+  --ink-focus: #5e6ad2;
+  --ink-focus-ring: rgba(94, 106, 210, 0.25);
+  --ink-btn-primary: #5e6ad2;
+  --ink-btn-primary-hover: #6b76e0;
+  --radius: 6px;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  background: var(--ink-bg);
+  color: var(--ink-input);
+  min-height: 100vh;
+}
+
+/* Themed scrollbars (WebKit) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f42 var(--ink-border);
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--ink-border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #3f3f42;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+@layer utilities {
+  .ink-panel {
+    background: var(--ink-panel);
+    border: 1px solid var(--ink-border);
+    border-radius: var(--radius);
+  }
+  .ink-input {
+    background: var(--ink-panel);
+    border: 1px solid var(--ink-border);
+    border-radius: var(--radius);
+    color: var(--ink-input);
+  }
+  .ink-input::placeholder {
+    color: var(--ink-label);
+  }
+  .ink-input:focus {
+    outline: none;
+    border-color: var(--ink-focus);
+    box-shadow: 0 0 0 1px var(--ink-focus-ring);
+  }
+  .ink-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-label);
+  }
+  .ink-btn-primary {
+    background: var(--ink-btn-primary);
+    color: white;
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+  }
+  .ink-btn-primary:hover:not(:disabled) {
+    background: var(--ink-btn-primary-hover);
+  }
+  .ink-btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .no-number-spinner {
+    -moz-appearance: textfield;
+  }
+  .no-number-spinner::-webkit-inner-spin-button,
+  .no-number-spinner::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  /* Audio preview player – dark theme for native controls */
+  .ink-audio-wrapper {
+    color-scheme: dark;
+  }
+  .ink-audio-wrapper audio {
+    accent-color: var(--ink-focus);
+    color: var(--ink-input);
+  }
+
+  .instructions-check-pop {
+    animation: instructionsCheckPop 0.35s ease-out;
+  }
+  .unlock-fade-in {
+    animation: unlockFadeIn 0.4s ease-out;
+  }
+  .unlock-scale {
+    animation: unlockScale 0.5s ease-out;
+  }
+}
+
+@keyframes instructionsCheckPop {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes unlockFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes unlockScale {
+  from { transform: scale(0.5); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
 }
