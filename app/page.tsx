@@ -1,10 +1,26 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet } from "lucide-react";
 
-type Mode = "single" | "masterclass";
+type Mode = "single" | "masterclass" | "chapters";
+type ChapterBatchMode = "single" | "batch";
 type UseCaseEntry = { taskName: string; instructions: string };
+
+interface BatchFile {
+  id: string;
+  name: string;
+  status: "pending" | "processing" | "success" | "error";
+  chapters?: string;
+  title?: string;
+  thumbnailText?: string;
+  tags?: string;
+  description?: string;
+  error?: string;
+  errorCategory?: string;
+  sheetsStatus?: "pending" | "writing" | "written" | "error";
+  sheetsError?: string;
+}
 
 const INITIAL_USE_CASES: UseCaseEntry[] = [
   { taskName: "", instructions: "" },
@@ -28,6 +44,35 @@ export default function Home() {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Chapters mode state
+  const [chapterMode, setChapterMode] = useState<ChapterBatchMode>("single");
+  const [driveFileId, setDriveFileId] = useState("");
+  const [driveFolderId, setDriveFolderId] = useState("");
+  const [driveFolderName, setDriveFolderName] = useState("");
+  const [chapterVideoTitle, setChapterVideoTitle] = useState("");
+  const [chapters, setChapters] = useState("");
+  const [chapterFileName, setChapterFileName] = useState("");
+  const [isGeneratingChapters, setIsGeneratingChapters] = useState(false);
+  const [chaptersCopied, setChaptersCopied] = useState(false);
+
+  // Batch specific state
+  const [batchFiles, setBatchFiles] = useState<BatchFile[]>([]);
+  const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
+  const [batchProgress, setBatchProgress] = useState("");
+  const [batchComplete, setBatchComplete] = useState(false);
+  const batchAbortRef = useRef(false);
+
+  // Sheets state
+  const [spreadsheetId, setSpreadsheetId] = useState(() => {
+    if (typeof window !== "undefined") {
+      return process.env.NEXT_PUBLIC_GOOGLE_SHEETS_SPREADSHEET_ID || localStorage.getItem("sheets-spreadsheet-id") || "";
+    }
+    return process.env.NEXT_PUBLIC_GOOGLE_SHEETS_SPREADSHEET_ID || "";
+  });
+  const [sheetsTabName, setSheetsTabName] = useState("");
+  const [isCommittingToSheets, setIsCommittingToSheets] = useState(false);
+  const [sheetsProgress, setSheetsProgress] = useState("");
 
   const [softwareName, setSoftwareName] = useState("");
   const [useCases, setUseCases] = useState<UseCaseEntry[]>(() => [...INITIAL_USE_CASES]);
@@ -251,6 +296,261 @@ export default function Home() {
     setScript(formatted.trim());
   };
 
+  const handleGenerateChapters = async () => {
+    if (!driveFileId.trim()) {
+      setError("Please enter a Google Drive file ID");
+      return;
+    }
+
+    setIsGeneratingChapters(true);
+    setError(null);
+    setChapters("");
+    setChapterFileName("");
+    setChaptersCopied(false);
+
+    try {
+      const response = await fetch("/api/generate-chapters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driveFileId: driveFileId.trim(),
+          videoTitle: chapterVideoTitle.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate chapters");
+      }
+
+      const data = await response.json();
+      setChapters(data.chapters);
+      setChapterFileName(data.fileName || "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setIsGeneratingChapters(false);
+    }
+  };
+
+  const handleGenerateBatch = async () => {
+    if (!driveFolderId.trim()) {
+      setError("Please enter a Google Drive Folder ID");
+      return;
+    }
+
+    setIsGeneratingBatch(true);
+    setError(null);
+    setChapters("");
+    setBatchProgress("Fetching folder contents...");
+    setBatchFiles([]);
+    setBatchComplete(false);
+    batchAbortRef.current = false;
+
+    try {
+      // 1. Fetch sorted list of videos from the folder
+      const listResponse = await fetch(`/api/drive-folder?folderId=${encodeURIComponent(driveFolderId.trim())}`);
+      if (!listResponse.ok) {
+        const errorData = await listResponse.json();
+        throw new Error(errorData.error || "Failed to fetch folder contents");
+      }
+
+      const listData = await listResponse.json();
+      const files: BatchFile[] = (listData.files || []).map((f: any) => ({
+        id: f.id,
+        name: f.name,
+        status: "pending",
+      }));
+
+      if (files.length === 0) {
+        throw new Error("No video files found in the specified folder.");
+      }
+
+      setBatchFiles(files);
+      setDriveFolderName(listData.folderName || "");
+      
+      // Auto-fill the tab name with Software Name + Folder Name
+      const prefix = softwareName.trim() ? `${softwareName.trim()} ` : "";
+      setSheetsTabName(`${prefix}${listData.folderName || "Videos"}`);
+
+      let aggregatedChapters = "";
+
+      // 2. Loop through each file sequentially
+      for (let i = 0; i < files.length; i++) {
+        // Check for abort
+        if (batchAbortRef.current) {
+          setBatchProgress(`Batch stopped by user at Video ${i} of ${files.length}`);
+          break;
+        }
+
+        const file = files[i];
+        
+        // Update status to processing
+        setBatchFiles((prev) => 
+          prev.map((f, idx) => idx === i ? { ...f, status: "processing" } : f)
+        );
+        setBatchProgress(`Processing Video ${i + 1} of ${files.length}`);
+
+        try {
+          const response = await fetch("/api/generate-chapters", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              driveFileId: file.id,
+              videoTitle: file.name.replace(/\.[^/.]+$/, ""), // strip extension for title
+            }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            const errorCategory = errorData.errorCategory || "UNKNOWN";
+            throw Object.assign(
+              new Error(errorData.error || "Failed to generate chapters"),
+              { errorCategory }
+            );
+          }
+
+          const data = await response.json();
+          const newChapters = data.chapters;
+          
+          // Format and append to aggregated output
+          const block = `# ${data.title || file.name}\n${newChapters}\n\n`;
+          aggregatedChapters += block;
+          setChapters(aggregatedChapters);
+
+          // Mark success with all metadata
+          setBatchFiles((prev) => 
+            prev.map((f, idx) => idx === i ? { 
+              ...f, 
+              status: "success", 
+              chapters: newChapters,
+              title: data.title,
+              thumbnailText: data.thumbnailText,
+              tags: data.tags,
+              description: data.description,
+              sheetsStatus: "pending",
+            } : f)
+          );
+
+        } catch (err: any) {
+          // Catch individual video failure and continue loop
+          const errorMessage = err instanceof Error ? err.message : "Unknown error";
+          const errorCategory = err?.errorCategory || "UNKNOWN";
+          setBatchFiles((prev) => 
+            prev.map((f, idx) => idx === i ? { ...f, status: "error", error: errorMessage, errorCategory } : f)
+          );
+        }
+      }
+
+      if (!batchAbortRef.current) {
+        setBatchProgress(`Batch processing complete!`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+      setBatchProgress("Batch failed.");
+    } finally {
+      setIsGeneratingBatch(false);
+      setBatchComplete(true);
+    }
+  };
+
+  const handleStopBatch = () => {
+    batchAbortRef.current = true;
+  };
+
+  const handleCopyErrorLog = () => {
+    const failures = batchFiles.filter((f) => f.status === "error");
+    if (failures.length === 0) return;
+    const log = failures
+      .map((f, i) => `${i + 1}. ${f.name}\n   Category: ${f.errorCategory || "UNKNOWN"}\n   Error: ${f.error}`)
+      .join("\n\n");
+    const header = `Batch Error Log — ${failures.length} failure(s)\n${"=".repeat(40)}\n\n`;
+    navigator.clipboard.writeText(header + log);
+  };
+
+  const handleCommitToSheets = async () => {
+    if (!spreadsheetId.trim()) {
+      setError("Please enter a Spreadsheet ID");
+      return;
+    }
+    if (!sheetsTabName.trim()) {
+      setError("Please enter a Tab Name");
+      return;
+    }
+
+    // Persist spreadsheet ID to localStorage
+    if (typeof window !== "undefined") {
+      localStorage.setItem("sheets-spreadsheet-id", spreadsheetId.trim());
+    }
+
+    const successFiles = batchFiles.filter((f) => f.status === "success");
+    if (successFiles.length === 0) {
+      setError("No successfully processed videos to commit.");
+      return;
+    }
+
+    setIsCommittingToSheets(true);
+    setSheetsProgress("Starting Sheets write...");
+
+    // Get the indices of successful files in the ORIGINAL sorted order
+    for (let i = 0; i < batchFiles.length; i++) {
+      const file = batchFiles[i];
+      if (file.status !== "success" || !file.chapters) continue;
+
+      setBatchFiles((prev) =>
+        prev.map((f, idx) => idx === i ? { ...f, sheetsStatus: "writing" } : f)
+      );
+      setSheetsProgress(`Writing to Sheets: ${file.title || file.name}`);
+
+      try {
+        const response = await fetch("/api/write-sheets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            spreadsheetId: spreadsheetId.trim(),
+            tabName: sheetsTabName.trim(),
+            rowIndex: i, // Alphabetical order = row order (Golden Rule)
+            data: {
+              title: file.title || file.name,
+              thumbnailText: file.thumbnailText || "",
+              chapters: file.chapters || "",
+              description: file.description || "",
+              tags: file.tags || "",
+            },
+          }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || "Failed to write to Sheets");
+        }
+
+        setBatchFiles((prev) =>
+          prev.map((f, idx) => idx === i ? { ...f, sheetsStatus: "written" } : f)
+        );
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Sheets write failed";
+        setBatchFiles((prev) =>
+          prev.map((f, idx) => idx === i ? { ...f, sheetsStatus: "error", sheetsError: errorMessage } : f)
+        );
+      }
+
+      // 1-second delay between writes to respect rate limits
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    setSheetsProgress("Sheets commit complete!");
+    setIsCommittingToSheets(false);
+  };
+
+  const handleCopyChapters = () => {
+    if (!chapters.trim()) return;
+    navigator.clipboard.writeText(chapters).then(() => {
+      setChaptersCopied(true);
+      setTimeout(() => setChaptersCopied(false), 2000);
+    });
+  };
+
   if (!isAuthorized) {
     return (
       <main className="min-h-screen bg-[#0c0c0d] flex items-center justify-center p-4">
@@ -346,6 +646,18 @@ export default function Home() {
             >
               <Layers className="w-3.5 h-3.5" />
               Masterclass
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("chapters")}
+              className={`px-3 py-2 text-sm font-medium rounded-[6px] border transition-colors flex items-center gap-1.5 ${
+                mode === "chapters"
+                  ? "bg-[#161618] text-[#e2e2e2] border-[#262626]"
+                  : "border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626]"
+              }`}
+            >
+              <Video className="w-3.5 h-3.5" />
+              Chapters
             </button>
           </div>
           <button
@@ -534,7 +846,7 @@ export default function Home() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : mode === "masterclass" ? (
           <div className="space-y-6 w-full">
             {/* Row 1 - Settings */}
             <div className={panelClass}>
@@ -825,6 +1137,343 @@ export default function Home() {
               </div>
             </div>
           </div>
+        ) : (
+          /* ─── Chapters Mode ─── */
+          <div className="space-y-6">
+            <div className="flex gap-2 p-1 bg-[#161618] border border-[#262626] rounded-[8px] w-fit">
+              <button
+                onClick={() => setChapterMode("single")}
+                className={`px-4 py-1.5 text-sm font-medium rounded-[6px] transition-colors ${
+                  chapterMode === "single"
+                    ? "bg-[#262626] text-[#e2e2e2]"
+                    : "text-[#8a8a8b] hover:text-[#e2e2e2]"
+                }`}
+              >
+                Single Video
+              </button>
+              <button
+                onClick={() => setChapterMode("batch")}
+                className={`px-4 py-1.5 text-sm font-medium rounded-[6px] transition-colors ${
+                  chapterMode === "batch"
+                    ? "bg-[#262626] text-[#e2e2e2]"
+                    : "text-[#8a8a8b] hover:text-[#e2e2e2]"
+                }`}
+              >
+                Drive Folder (Batch)
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Left Column - Drive Input */}
+            <div className={panelClass}>
+              <h2 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#e2e2e2]">
+                <Video className="w-4 h-4 text-[#8a8a8b]" />
+                Chapter Generator
+              </h2>
+
+              <div className="space-y-3">
+                {chapterMode === "single" ? (
+                  <>
+                    <div>
+                      <label htmlFor="driveFileId" className={labelClass}>
+                        Google Drive File ID
+                      </label>
+                      <input
+                        id="driveFileId"
+                        type="text"
+                        value={driveFileId}
+                        onChange={(e) => setDriveFileId(e.target.value)}
+                        placeholder="e.g. 1aBcDeFgHiJkLmNoPqRsT"
+                        className={`${inputBase} font-mono`}
+                        disabled={isGeneratingChapters || isGeneratingBatch}
+                      />
+                      <p className="mt-1 text-[11px] uppercase tracking-wider text-[#8a8a8b]">
+                        From the Drive URL: drive.google.com/file/d/<strong>THIS_PART</strong>/view
+                      </p>
+                    </div>
+
+                    <div>
+                      <label htmlFor="chapterVideoTitle" className={labelClass}>
+                        Video Title (optional)
+                      </label>
+                      <input
+                        id="chapterVideoTitle"
+                        type="text"
+                        value={chapterVideoTitle}
+                        onChange={(e) => setChapterVideoTitle(e.target.value)}
+                        placeholder="Helps Gemini generate better chapter names"
+                        className={inputBase}
+                        disabled={isGeneratingChapters || isGeneratingBatch}
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={handleGenerateChapters}
+                        disabled={isGeneratingChapters || !driveFileId.trim() || isGeneratingBatch}
+                        className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2"
+                      >
+                        {isGeneratingChapters ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Processing video...
+                          </>
+                        ) : (
+                          <>
+                            <Video className="w-4 h-4" />
+                            Generate Chapters
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label htmlFor="driveFolderId" className={labelClass}>
+                        Google Drive Folder ID
+                      </label>
+                      <input
+                        id="driveFolderId"
+                        type="text"
+                        value={driveFolderId}
+                        onChange={(e) => setDriveFolderId(e.target.value)}
+                        placeholder="e.g. 1aBcDeFgHiJkLmNoPqRsT"
+                        className={`${inputBase} font-mono`}
+                        disabled={isGeneratingChapters || isGeneratingBatch}
+                      />
+                      <p className="mt-1 text-[11px] uppercase tracking-wider text-[#8a8a8b]">
+                        From the Drive Folder URL: drive.google.com/drive/folders/<strong>THIS_PART</strong>
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={handleGenerateBatch}
+                        disabled={isGeneratingBatch || !driveFolderId.trim() || isGeneratingChapters}
+                        className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 border-indigo-500"
+                      >
+                        {isGeneratingBatch ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Batch Running...
+                          </>
+                        ) : (
+                          <>
+                            <Layers className="w-4 h-4" />
+                            Process Entire Folder
+                          </>
+                        )}
+                      </button>
+                      {isGeneratingBatch && (
+                        <button
+                          onClick={handleStopBatch}
+                          className="px-3 py-2 text-sm font-medium rounded-[6px] border border-red-900/50 bg-red-950/20 text-red-400 hover:bg-red-950/40 flex items-center gap-1.5"
+                        >
+                          <Square className="w-3.5 h-3.5" />
+                          Stop
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* Progress Indicators */}
+                {isGeneratingChapters && chapterMode === "single" && (
+                  <div className="p-3 rounded-[6px] border border-[#262626] bg-[#161618] text-[11px] uppercase tracking-wider text-[#8a8a8b] space-y-1">
+                    <p>⏳ Downloading video from Drive...</p>
+                    <p>⏳ Uploading to Gemini File API...</p>
+                    <p>⏳ Waiting for video processing...</p>
+                    <p className="text-[#e2e2e2]">This may take 1–3 minutes for large files.</p>
+                  </div>
+                )}
+
+                {(isGeneratingBatch || batchFiles.length > 0) && chapterMode === "batch" && (
+                  <div className="p-3 rounded-[6px] border border-[#262626] bg-[#161618] space-y-3">
+                    <div className="text-[11px] uppercase tracking-wider text-[#e2e2e2] flex items-center gap-2 font-semibold">
+                      <Layers className="w-3.5 h-3.5 text-[#8a8a8b]" />
+                      {batchProgress || "Batch Progress"}
+                    </div>
+                    <div className="max-h-[300px] overflow-y-auto space-y-1.5 pr-2 custom-scrollbar">
+                      {batchFiles.map((f, i) => (
+                        <div key={f.id} className="space-y-0">
+                          <div className="flex items-center justify-between p-2 rounded bg-[#0c0c0d] border border-[#262626]">
+                            <span className="text-xs text-[#e2e2e2] truncate max-w-[180px]" title={f.name}>
+                              {i + 1}. {f.name}
+                            </span>
+                            <span className="text-[10px] uppercase tracking-wider shrink-0 ml-2">
+                              {f.status === "pending" && <span className="text-[#8a8a8b]">Pending</span>}
+                              {f.status === "processing" && <span className="text-blue-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin"/> Processing</span>}
+                              {f.status === "success" && <span className="text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3"/> Done</span>}
+                              {f.status === "error" && <span className="text-red-400 flex items-center gap-1"><X className="w-3 h-3"/> Failed</span>}
+                            </span>
+                          </div>
+                          {f.status === "error" && f.error && (
+                            <div className="ml-4 px-2 py-1.5 text-[10px] text-red-400/80 bg-red-950/20 border-l-2 border-red-500/30 rounded-br">
+                              <span className="font-semibold uppercase tracking-wider">{f.errorCategory || "Error"}</span>: {f.error}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Batch Summary — appears after completion */}
+                    {batchComplete && !isGeneratingBatch && (
+                      <div className="pt-2 border-t border-[#262626] space-y-2">
+                        <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider">
+                          <span className="text-emerald-400">
+                            ✓ {batchFiles.filter((f) => f.status === "success").length} succeeded
+                          </span>
+                          {batchFiles.filter((f) => f.status === "error").length > 0 && (
+                            <span className="text-red-400 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              {batchFiles.filter((f) => f.status === "error").length} failed
+                            </span>
+                          )}
+                          {batchFiles.filter((f) => f.status === "pending").length > 0 && (
+                            <span className="text-[#8a8a8b]">
+                              {batchFiles.filter((f) => f.status === "pending").length} skipped
+                            </span>
+                          )}
+                        </div>
+                        {batchFiles.some((f) => f.status === "error") && (
+                          <button
+                            onClick={handleCopyErrorLog}
+                            className="px-3 py-1.5 rounded-[6px] border border-red-900/50 bg-red-950/20 text-xs text-red-400 hover:bg-red-950/40 flex items-center gap-1.5"
+                          >
+                            <Copy className="w-3 h-3" />
+                            Copy Error Log
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Sheets Config & Commit — appears after batch completes */}
+                    {batchComplete && !isGeneratingBatch && batchFiles.some((f) => f.status === "success") && (
+                      <div className="pt-3 border-t border-[#262626] space-y-3">
+                        <div className="text-[11px] uppercase tracking-wider text-[#e2e2e2] flex items-center gap-2 font-semibold">
+                          <Sheet className="w-3.5 h-3.5 text-[#8a8a8b]" />
+                          Commit to Google Sheets
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                          <div>
+                            <label htmlFor="spreadsheetId" className="text-[10px] uppercase tracking-wider text-[#8a8a8b] block mb-1">
+                              Spreadsheet ID
+                            </label>
+                            <input
+                              id="spreadsheetId"
+                              type="text"
+                              value={spreadsheetId}
+                              onChange={(e) => setSpreadsheetId(e.target.value)}
+                              placeholder="From URL: docs.google.com/spreadsheets/d/THIS_PART/edit"
+                              className={`${inputBase} font-mono text-xs`}
+                              disabled={isCommittingToSheets}
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor="sheetsTabName" className="text-[10px] uppercase tracking-wider text-[#8a8a8b] block mb-1">
+                              Tab Name
+                            </label>
+                            <input
+                              id="sheetsTabName"
+                              type="text"
+                              value={sheetsTabName}
+                              onChange={(e) => setSheetsTabName(e.target.value)}
+                              placeholder="e.g. Gemini Windows App Videos"
+                              className={`${inputBase} text-xs`}
+                              disabled={isCommittingToSheets}
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={handleCommitToSheets}
+                          disabled={isCommittingToSheets || !spreadsheetId.trim() || !sheetsTabName.trim()}
+                          className="w-full px-4 py-2.5 text-sm font-medium rounded-[6px] bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {isCommittingToSheets ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              {sheetsProgress}
+                            </>
+                          ) : (
+                            <>
+                              <Sheet className="w-4 h-4" />
+                              Commit Batch to Sheets ({batchFiles.filter((f) => f.status === "success").length} videos)
+                            </>
+                          )}
+                        </button>
+
+                        {/* Sheets write status */}
+                        {batchFiles.some((f) => f.sheetsStatus && f.sheetsStatus !== "pending") && (
+                          <div className="space-y-1">
+                            {batchFiles.filter((f) => f.sheetsStatus && f.sheetsStatus !== "pending").map((f) => (
+                              <div key={`sheets-${f.id}`} className="flex items-center justify-between text-[10px] px-2 py-1 rounded bg-[#0c0c0d]">
+                                <span className="text-[#e2e2e2] truncate max-w-[160px]">{f.title || f.name}</span>
+                                <span className="shrink-0 ml-2 uppercase tracking-wider">
+                                  {f.sheetsStatus === "writing" && <span className="text-blue-400 flex items-center gap-1"><Loader2 className="w-2.5 h-2.5 animate-spin"/> Writing</span>}
+                                  {f.sheetsStatus === "written" && <span className="text-emerald-400 flex items-center gap-1"><Check className="w-2.5 h-2.5"/> Written</span>}
+                                  {f.sheetsStatus === "error" && <span className="text-red-400 flex items-center gap-1" title={f.sheetsError}><X className="w-2.5 h-2.5"/> Failed</span>}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column - Chapter Output */}
+            <div className={panelClass}>
+              <h2 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#e2e2e2]">
+                <FileText className="w-4 h-4 text-[#8a8a8b]" />
+                Chapters Output
+                {chapterFileName && (
+                  <span className="text-[11px] font-normal text-[#8a8a8b] truncate max-w-[200px]">
+                    — {chapterFileName}
+                  </span>
+                )}
+              </h2>
+
+              <textarea
+                value={chapters}
+                onChange={(e) => setChapters(e.target.value)}
+                placeholder="Generated chapters will appear here...\n\n[00:00] Introduction\n[00:35] Opening the Dashboard\n[01:12] Creating a New Project"
+                rows={16}
+                className={`${inputBase} font-mono resize-none`}
+                disabled={isGeneratingChapters}
+              />
+
+              {chapters && (
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wider text-[#8a8a8b]">
+                    {chapters.trim().split("\n").filter((l) => l.trim()).length} chapters
+                  </span>
+                  <button
+                    onClick={handleCopyChapters}
+                    className="px-3 py-1.5 rounded-[6px] border border-[#262626] bg-[#161618] text-xs text-[#e2e2e2] hover:bg-[#1a1a1c] flex items-center gap-1.5"
+                  >
+                    {chaptersCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        Copy to Clipboard
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
         )}
       </div>
     </main>
