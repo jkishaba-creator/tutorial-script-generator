@@ -17,33 +17,49 @@ export interface Job {
   fileMetaJson: string; 
 }
 
-const DB_DIR = path.join(process.cwd(), "data");
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+
+let dbInstance: Database.Database | null = null;
+
+function getDB(): Database.Database {
+  if (dbInstance) return dbInstance;
+
+  // On Vercel, SQLite is not supported since the filesystem is read-only
+  if (process.env.VERCEL) {
+    throw new Error("SQLite Queue Database is not available on Vercel.");
+  }
+
+  const DB_DIR = path.join(process.cwd(), "data");
+  if (!fs.existsSync(DB_DIR)) {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+  }
+
+  const DB_PATH = path.join(DB_DIR, "queue.db");
+  const db = new Database(DB_PATH);
+
+  // Initialize schema
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      batchId TEXT NOT NULL,
+      videoName TEXT NOT NULL,
+      status TEXT NOT NULL,
+      renderPercent INTEGER NOT NULL DEFAULT 0,
+      addedAt TEXT NOT NULL,
+      startedAt TEXT,
+      completedAt TEXT,
+      errorMessage TEXT,
+      skipReason TEXT,
+      fileMetaJson TEXT NOT NULL
+    );
+  `);
+
+  dbInstance = db;
+  return dbInstance;
 }
-
-const DB_PATH = path.join(DB_DIR, "queue.db");
-const db = new Database(DB_PATH);
-
-// Initialize schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    batchId TEXT NOT NULL,
-    videoName TEXT NOT NULL,
-    status TEXT NOT NULL,
-    renderPercent INTEGER NOT NULL DEFAULT 0,
-    addedAt TEXT NOT NULL,
-    startedAt TEXT,
-    completedAt TEXT,
-    errorMessage TEXT,
-    skipReason TEXT,
-    fileMetaJson TEXT NOT NULL
-  );
-`);
 
 export const jobQueueDB = {
   addJob: (job: Omit<Job, "status" | "renderPercent" | "addedAt" | "startedAt" | "completedAt" | "errorMessage" | "skipReason">): Job => {
+    const db = getDB();
     const stmt = db.prepare(`
       INSERT OR IGNORE INTO jobs (id, batchId, videoName, status, renderPercent, addedAt, fileMetaJson)
       VALUES (?, ?, ?, 'pending', 0, ?, ?)
@@ -53,26 +69,31 @@ export const jobQueueDB = {
   },
 
   getJob: (id: string): Job | undefined => {
+    const db = getDB();
     const stmt = db.prepare(`SELECT * FROM jobs WHERE id = ?`);
     return stmt.get(id) as Job | undefined;
   },
 
   getJobsByBatch: (batchId: string): Job[] => {
+    const db = getDB();
     const stmt = db.prepare(`SELECT * FROM jobs WHERE batchId = ? ORDER BY addedAt ASC`);
     return stmt.all(batchId) as Job[];
   },
 
   getAllJobs: (): Job[] => {
+    const db = getDB();
     const stmt = db.prepare(`SELECT * FROM jobs ORDER BY addedAt DESC`);
     return stmt.all() as Job[];
   },
 
   getNextPendingJob: (): Job | undefined => {
+    const db = getDB();
     const stmt = db.prepare(`SELECT * FROM jobs WHERE status = 'pending' ORDER BY addedAt ASC LIMIT 1`);
     return stmt.get() as Job | undefined;
   },
 
   updateJobStatus: (id: string, status: Job["status"], percent: number = 0) => {
+    const db = getDB();
     if (status === "downloading" || status === "processing" || status === "uploading") {
       const stmt = db.prepare(`UPDATE jobs SET status = ?, renderPercent = ?, startedAt = COALESCE(startedAt, ?) WHERE id = ?`);
       stmt.run(status, percent, new Date().toISOString(), id);
@@ -86,16 +107,19 @@ export const jobQueueDB = {
   },
 
   setJobError: (id: string, error: string) => {
+    const db = getDB();
     const stmt = db.prepare(`UPDATE jobs SET status = 'error', errorMessage = ?, completedAt = ? WHERE id = ?`);
     stmt.run(error, new Date().toISOString(), id);
   },
 
   setJobSkipped: (id: string, reason: string) => {
+    const db = getDB();
     const stmt = db.prepare(`UPDATE jobs SET status = 'skipped', skipReason = ?, completedAt = ? WHERE id = ?`);
     stmt.run(reason, new Date().toISOString(), id);
   },
 
   resetStalledJobs: () => {
+    const db = getDB();
     // Crash recovery: Any job marked downloading/processing/uploading is stalled
     const stmt = db.prepare(`
       UPDATE jobs 
@@ -107,11 +131,13 @@ export const jobQueueDB = {
   },
 
   deleteJob: (id: string) => {
+    const db = getDB();
     const stmt = db.prepare(`DELETE FROM jobs WHERE id = ?`);
     stmt.run(id);
   },
 
   clearQueue: () => {
+    const db = getDB();
     db.exec(`DELETE FROM jobs`);
   }
 };
