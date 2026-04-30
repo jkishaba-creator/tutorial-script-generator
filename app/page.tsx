@@ -2593,14 +2593,14 @@ export default function Home() {
 
                     <div>
                       <label htmlFor="sheetsTabName" className={labelClass}>
-                        Google Sheets Tab Name (optional)
+                        Google Sheets Tab Name <span className="text-red-400">*</span>
                       </label>
                       <input
                         id="sheetsTabName"
                         type="text"
                         value={sheetsTabName}
                         onChange={(e) => setSheetsTabName(e.target.value)}
-                        placeholder="Leave blank to auto-name from Drive"
+                        placeholder="Required: e.g. Q2 Masterclass"
                         className={inputBase}
                         disabled={isAddingToQueue}
                       />
@@ -2609,7 +2609,7 @@ export default function Home() {
                     <div className="flex items-center gap-2 pt-1">
                       <button
                         onClick={handleAddToQueue}
-                        disabled={isAddingToQueue || !driveFolderId.trim() || isGeneratingChapters}
+                        disabled={isAddingToQueue || !driveFolderId.trim() || !sheetsTabName.trim() || isGeneratingChapters}
                         className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 border-indigo-500 disabled:opacity-50"
                       >
                         {isAddingToQueue ? (

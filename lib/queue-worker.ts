@@ -86,13 +86,34 @@ export async function startQueueWorker() {
     console.error("[Queue Worker] Crash recovery failed:", err);
   }
 
+  // ── Startup: Recover stalled manual folders ──────────────────────
+  try {
+    const allFolders = await folderQueue.getFolders();
+    const stalledManual = allFolders.filter(
+      (f) => f.type === "manual" && f.stage === "rendered" && !f.exportedAt
+    );
+    if (stalledManual.length > 0) {
+      for (const folder of stalledManual) {
+        await folderQueue.pushAction({ action: "export", folderId: folder.folderId });
+      }
+      console.log(`[Queue Worker] ⚡ Crash recovery: Re-queued ${stalledManual.length} stalled manual folders.`);
+    }
+  } catch (err) {
+    console.error("[Queue Worker] Folder crash recovery failed:", err);
+  }
+
   // ── Startup: Send "Online" heartbeat ─────────────────────────────
   await sendHeartbeat("idle");
 
   // ── Heartbeat timer (every 5 min) ────────────────────────────────
   const heartbeatInterval = setInterval(async () => {
-    const depth = await kvQueue.getPendingCount().catch(() => 0);
-    await sendHeartbeat(currentJobName ? "processing" : "idle", depth);
+    try {
+      const jobDepth = await kvQueue.getPendingCount().catch(() => 0);
+      const actionDepth = await folderQueue.getActionCount().catch(() => 0);
+      await sendHeartbeat(currentJobName ? "processing" : "idle", jobDepth + actionDepth);
+    } catch (e) {
+      // Ignore heartbeat errors
+    }
   }, 5 * 60 * 1000);
 
   // ── Nightly pruner (every 24h) ───────────────────────────────────
@@ -130,6 +151,13 @@ export async function startQueueWorker() {
       if (folderAction) {
         await handleFolderAction(folderAction);
         emptyCount = 0;
+        
+        try {
+          const jobDepth = await kvQueue.getPendingCount().catch(() => 0);
+          const actionDepth = await folderQueue.getActionCount().catch(() => 0);
+          await sendHeartbeat("idle", jobDepth + actionDepth);
+        } catch (e) {}
+        
         continue;
       }
 
@@ -161,8 +189,13 @@ export async function startQueueWorker() {
       currentJobName = undefined;
 
       // Heartbeat after every job
-      const depth = await kvQueue.getPendingCount().catch(() => 0);
-      await sendHeartbeat("idle", depth);
+      try {
+        const jobDepth = await kvQueue.getPendingCount().catch(() => 0);
+        const actionDepth = await folderQueue.getActionCount().catch(() => 0);
+        await sendHeartbeat("idle", jobDepth + actionDepth);
+      } catch (e) {
+        // Ignore heartbeat errors
+      }
 
     } catch (err) {
       console.error("[Queue Worker] Critical loop error:", err);
@@ -574,6 +607,8 @@ async function handleExportAction(folderId: string) {
   try {
     const tabName = folder.sheetTabName || `${folder.software} — ${folder.date}`;
     const folderLink = folder.ytFolderLink || `https://drive.google.com/drive/folders/${folder.folderId}`;
+
+    console.log(`[Queue Worker] 📝 PREPARING TO EXPORT TO SHEETS. folder.sheetTabName="${folder.sheetTabName}", fallback="${folder.software} — ${folder.date}", final tabName="${tabName}"`);
 
     await writeFolderBatch(spreadsheetId, tabName, folderLink, updatedResults);
 

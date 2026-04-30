@@ -497,4 +497,12 @@ export const folderQueue = {
     if (!raw) return null;
     return typeof raw === "string" ? JSON.parse(raw) : raw;
   },
+
+  /**
+   * Get the number of pending actions in the folder queue.
+   */
+  async getActionCount(): Promise<number> {
+    const redis = getRedis();
+    return await redis.llen(KEY.folderActions);
+  },
 };
