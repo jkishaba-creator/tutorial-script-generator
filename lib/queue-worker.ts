@@ -17,7 +17,11 @@ import {
   kvQueue,
   crawlTrigger,
   macHeartbeat,
+  folderQueue,
   type KVJob,
+  type FolderAction,
+  type KVFolder,
+  type VideoResult,
 } from "./job-queue-kv";
 import {
   crawlUploadsDrive,
@@ -27,7 +31,13 @@ import {
   verifyUploadExists,
   purgeIfOld,
   buildFinishedFilename,
+  scanUploadsDrive,
+  markFolderProcessed,
 } from "./drive-crawler";
+import { prepareVideoForGemini, generateFromGeminiFile } from "./gemini-pipeline";
+import { buildChapterPrompt, cleanChapterOutput } from "./prompts/chapters";
+import { buildMetadataPrompt, parseMetadataResponse } from "./prompts/metadata";
+import { writeFolderBatch } from "./sheets-client";
 import { processVideo } from "./video-processor";
 import { sendDiscordNotification } from "./discord-webhook";
 import fs from "fs";
@@ -95,20 +105,44 @@ export async function startQueueWorker() {
     }
   }, 24 * 60 * 60 * 1000);
 
+  // ── Auto-scan timer (every 10 min) ────────────────────────────────
+  const scanInterval = setInterval(async () => {
+    try {
+      await handleScanAction();
+    } catch (err) {
+      console.warn("[Queue Worker] Auto-scan warning:", err);
+    }
+  }, 10 * 60 * 1000);
+
+  // Initial scan on startup
+  try {
+    await handleScanAction();
+  } catch (err) {
+    console.warn("[Queue Worker] Initial scan warning:", err);
+  }
+
   // ── Main Poll Loop ────────────────────────────────────────────────
   let emptyCount = 0;
   while (true) {
     try {
-      // 1. Check for a crawl trigger from Vercel/VA
+      // 1. Check for folder-level actions from Ava UI
+      const folderAction = await folderQueue.claimAction();
+      if (folderAction) {
+        await handleFolderAction(folderAction);
+        emptyCount = 0;
+        continue;
+      }
+
+      // 2. Check for a crawl trigger from Vercel/VA (legacy)
       const trigger = await crawlTrigger.claimAndClear();
       if (trigger) {
         console.log(`[Queue Worker] 📡 Crawl trigger received from ${trigger.requestedBy || "dashboard"}. Running crawl...`);
         await runCrawlAndEnqueue(trigger);
-        emptyCount = 0; // Reset backoff since we have work
-        continue; // Immediately loop back to pick up the new jobs
+        emptyCount = 0;
+        continue;
       }
 
-      // 2. Claim the next pending job
+      // 3. Claim the next pending job
       const job = await kvQueue.claimNextJob();
       if (!job) {
         // Queue is empty — apply exponential backoff
@@ -139,6 +173,7 @@ export async function startQueueWorker() {
   // Cleanup (unreachable in practice but good practice)
   clearInterval(heartbeatInterval);
   clearInterval(pruneInterval);
+  clearInterval(scanInterval);
 }
 
 // ── Crawl & Enqueue ────────────────────────────────────────────────────
@@ -276,12 +311,18 @@ async function processJob(job: KVJob) {
       throw new Error(`Upload verification failed: ${uploadName} not found in YouTube Drive.`);
     }
 
-    // ── 48-Hour Purge ─────────────────────────────────────────────
+    // ── 48-Hour Purge — ONLY if folder is marked "done" in KV ─────
     try {
-      const vPurged = await purgeIfOld(fileMeta.videoFile.id, fileMeta.videoFile.createdTime);
-      const aPurged = await purgeIfOld(fileMeta.audioFile.id, fileMeta.audioFile.createdTime);
-      if (vPurged) console.log(`[Queue Worker] 🗑️  Purged raw video: ${fileMeta.videoFile.name}`);
-      if (aPurged) console.log(`[Queue Worker] 🗑️  Purged raw audio: ${fileMeta.audioFile.name}`);
+      // Check if this folder has been marked done by the Uploader
+      const folderDone = await isFolderMarkedDone(fileMeta.uploadDateFolderId);
+      if (folderDone) {
+        const vPurged = await purgeIfOld(fileMeta.videoFile.id, fileMeta.videoFile.createdTime);
+        const aPurged = await purgeIfOld(fileMeta.audioFile.id, fileMeta.audioFile.createdTime);
+        if (vPurged) console.log(`[Queue Worker] 🗑️  Purged raw video: ${fileMeta.videoFile.name}`);
+        if (aPurged) console.log(`[Queue Worker] 🗑️  Purged raw audio: ${fileMeta.audioFile.name}`);
+      } else {
+        console.log(`[Queue Worker] ⏳ Skipping purge — folder not marked as done yet.`);
+      }
     } catch (purgeErr) {
       console.warn(`[Queue Worker] Purge warning:`, purgeErr);
     }
@@ -326,6 +367,17 @@ async function checkBatchCompletion(batchId: string) {
       const skipped = jobs.filter((j) => j.status === "skipped").length;
       const errors = jobs.filter((j) => j.status === "error").length;
 
+      // Auto-advance the folder to "rendered" stage
+      const folders = await folderQueue.getFolders();
+      const matchingFolder = folders.find((f) => f.batchId === batchId);
+      if (matchingFolder && matchingFolder.stage === "rendering") {
+        await folderQueue.updateFolder(matchingFolder.folderId, {
+          stage: "rendered",
+          renderedAt: new Date().toISOString(),
+        });
+        console.log(`[Queue Worker] 📂 Folder ${matchingFolder.path} → rendered`);
+      }
+
       const msg = `✅ **Processed:** ${done}\n⏭️ **Skipped:** ${skipped}\n❌ **Errors:** ${errors}`;
       await sendDiscordNotification(
         `🏭 Batch Complete (${batchId.slice(0, 8)})`,
@@ -337,6 +389,226 @@ async function checkBatchCompletion(batchId: string) {
     console.warn("[Queue Worker] Batch completion check error:", err);
   }
 }
+
+// ── Folder Action Handlers (Ava UI) ───────────────────────────────────
+
+async function handleFolderAction(action: FolderAction) {
+  console.log(`[Queue Worker] 📂 Folder action: ${action.action}`);
+
+  switch (action.action) {
+    case "scan":
+      await handleScanAction();
+      break;
+
+    case "render": {
+      const folder = await folderQueue.getFolder(action.folderId);
+      if (!folder) {
+        console.error(`[Queue Worker] Folder ${action.folderId} not found in KV.`);
+        return;
+      }
+      console.log(`[Queue Worker] ▶ Starting render for ${folder.path}`);
+      // Trigger a crawl specifically for this folder
+      await runCrawlAndEnqueue({ targetFolderId: action.folderId });
+
+      // Link the batch to the folder
+      const activeBatches = await kvQueue.getActiveBatchIds();
+      if (activeBatches.length > 0) {
+        const latestBatch = activeBatches[activeBatches.length - 1];
+        await folderQueue.updateFolder(action.folderId, {
+          stage: "rendering",
+          batchId: latestBatch,
+        });
+      }
+      break;
+    }
+
+    case "export": {
+      await handleExportAction(action.folderId);
+      break;
+    }
+
+    case "done": {
+      await folderQueue.updateFolder(action.folderId, {
+        stage: "done",
+        doneAt: new Date().toISOString(),
+      });
+      console.log(`[Queue Worker] ☑️ Folder marked done.`);
+      break;
+    }
+  }
+}
+
+/**
+ * Scan the Uploads Drive and discover/update folders in KV.
+ */
+async function handleScanAction() {
+  const uploadsDriveId = process.env.UPLOADS_DRIVE_ID;
+  if (!uploadsDriveId) {
+    console.warn("[Queue Worker] UPLOADS_DRIVE_ID not set — cannot scan.");
+    return;
+  }
+
+  console.log("[Queue Worker] 🔍 Scanning Uploads Drive for folders...");
+  const scanned = await scanUploadsDrive(uploadsDriveId);
+
+  let newCount = 0;
+  let updatedCount = 0;
+
+  for (const item of scanned) {
+    const existing = await folderQueue.getFolder(item.folderId);
+
+    if (!existing) {
+      // New folder discovered
+      const stage = item.hasProcessed ? "done" as const : item.hasReady ? "ready" as const : "raw" as const;
+      await folderQueue.upsertFolder({
+        folderId: item.folderId,
+        path: item.path,
+        producer: item.producer,
+        software: item.software,
+        date: item.date,
+        stage,
+        batchId: null,
+        videoCount: item.videoCount,
+        ytFolderId: null,
+        ytFolderLink: null,
+        sheetTabName: null,
+        addedAt: new Date().toISOString(),
+        renderedAt: null,
+        exportedAt: null,
+        doneAt: stage === "done" ? new Date().toISOString() : null,
+        videoResults: null,
+      });
+      newCount++;
+    } else {
+      // Update video count and READY signal status if folder isn't already past "ready"
+      if (existing.stage === "raw" && item.hasReady) {
+        await folderQueue.updateFolder(item.folderId, { stage: "ready", videoCount: item.videoCount });
+        updatedCount++;
+      } else if (existing.stage === "raw" || existing.stage === "ready") {
+        await folderQueue.updateFolder(item.folderId, { videoCount: item.videoCount });
+      }
+    }
+  }
+
+  console.log(`[Queue Worker] 🔍 Scan complete: ${newCount} new, ${updatedCount} updated, ${scanned.length} total folders.`);
+}
+
+/**
+ * Generate metadata (chapters + title + description + tags) for all videos
+ * in a rendered folder, then write them atomically to Google Sheets.
+ */
+async function handleExportAction(folderId: string) {
+  const folder = await folderQueue.getFolder(folderId);
+  if (!folder) {
+    console.error(`[Queue Worker] Folder ${folderId} not found.`);
+    return;
+  }
+  if (!folder.videoResults || folder.videoResults.length === 0) {
+    console.error(`[Queue Worker] Folder ${folder.path} has no video results to export.`);
+    return;
+  }
+
+  const spreadsheetId = process.env.NEXT_PUBLIC_GOOGLE_SHEETS_SPREADSHEET_ID;
+  if (!spreadsheetId) {
+    console.error("[Queue Worker] NEXT_PUBLIC_GOOGLE_SHEETS_SPREADSHEET_ID not set.");
+    return;
+  }
+
+  console.log(`[Queue Worker] 📝 Generating metadata for ${folder.path} (${folder.videoResults.length} videos)...`);
+
+  const updatedResults: VideoResult[] = [...folder.videoResults];
+
+  for (let i = 0; i < updatedResults.length; i++) {
+    const video = updatedResults[i];
+    if (video.metadataStatus === "done") {
+      console.log(`[Queue Worker] ⏭️ Metadata already generated for ${video.filename}`);
+      continue;
+    }
+
+    try {
+      console.log(`[Queue Worker] 📹 Generating metadata for ${video.filename} (${i + 1}/${updatedResults.length})...`);
+
+      // Upload finished video to Gemini and generate metadata
+      const { activeFile, fileName } = await prepareVideoForGemini(video.driveFileId);
+
+      const titleForPrompts = video.filename.replace(/\.[^/.]+$/, "").replace(/_FINISHED$/, "");
+
+      // Generate chapters
+      const chapterPrompt = buildChapterPrompt(titleForPrompts);
+      const rawChapters = await generateFromGeminiFile(activeFile, chapterPrompt);
+      const chapters = cleanChapterOutput(rawChapters);
+
+      // Generate metadata
+      const metadataPrompt = buildMetadataPrompt(titleForPrompts);
+      const rawMetadata = await generateFromGeminiFile(activeFile, metadataPrompt);
+      const metadata = parseMetadataResponse(rawMetadata);
+
+      updatedResults[i] = {
+        ...video,
+        title: metadata.title,
+        thumbnailText: metadata.thumbnailText,
+        chapters,
+        description: metadata.description,
+        tags: metadata.tags,
+        metadataStatus: "done",
+        metadataError: null,
+      };
+
+      // Save progress after each video (crash-resilient)
+      await folderQueue.updateFolder(folderId, { videoResults: updatedResults });
+      console.log(`[Queue Worker] ✅ Metadata done for ${video.filename}`);
+
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Queue Worker] ❌ Metadata failed for ${video.filename}: ${message}`);
+      updatedResults[i] = {
+        ...video,
+        metadataStatus: "error",
+        metadataError: message,
+      };
+      await folderQueue.updateFolder(folderId, { videoResults: updatedResults });
+    }
+  }
+
+  // Write to Google Sheet
+  try {
+    const tabName = `${folder.software} — ${folder.date}`;
+    const folderLink = folder.ytFolderLink || "";
+
+    await writeFolderBatch(spreadsheetId, tabName, folderLink, updatedResults);
+
+    await folderQueue.updateFolder(folderId, {
+      stage: "exported",
+      exportedAt: new Date().toISOString(),
+      sheetTabName: tabName,
+      videoResults: updatedResults,
+    });
+
+    console.log(`[Queue Worker] 📊 Sheet export complete: ${tabName} (${updatedResults.length} rows)`);
+
+    await sendDiscordNotification(
+      `📊 Metadata Exported: ${folder.path}`,
+      `Tab: **${tabName}**\nVideos: ${updatedResults.length}\nAll chapters + metadata generated and written to Google Sheets.`,
+      0x7C3AED // purple
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Queue Worker] ❌ Sheet export failed: ${message}`);
+  }
+}
+
+/**
+ * Check if a folder is marked as "done" in KV. Used to gate the 48-hour purge.
+ */
+async function isFolderMarkedDone(uploadDateFolderId: string): Promise<boolean> {
+  try {
+    const folder = await folderQueue.getFolder(uploadDateFolderId);
+    return folder?.stage === "done";
+  } catch {
+    return false;
+  }
+}
+
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

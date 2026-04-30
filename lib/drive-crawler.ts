@@ -107,6 +107,126 @@ export async function listFolders(parentId: string): Promise<DriveFile[]> {
   return listChildren(parentId, FOLDER_MIME);
 }
 
+// ── READY Signal Detection ──────────────────────────────────────────
+
+/**
+ * Check if a file named "READY" (case-insensitive, any type) exists in a folder.
+ * The producer drops this file to signal the folder is complete and ready for processing.
+ */
+export async function hasReadySignal(dateFolderId: string): Promise<boolean> {
+  const drive = getDriveClientReadWrite();
+  const res = await drive.files.list({
+    q: `'${dateFolderId}' in parents and name = 'READY' and trashed = false`,
+    fields: "files(id, name)",
+    pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return (res.data.files?.length ?? 0) > 0;
+}
+
+/**
+ * After all videos in a folder are processed:
+ * 1. Delete the READY file
+ * 2. Create a PROCESSED file so the producer sees confirmation in Drive
+ */
+export async function markFolderProcessed(dateFolderId: string): Promise<void> {
+  const drive = getDriveClientReadWrite();
+
+  // Find and delete the READY file
+  const readyFiles = await drive.files.list({
+    q: `'${dateFolderId}' in parents and name = 'READY' and trashed = false`,
+    fields: "files(id)",
+    pageSize: 5,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  for (const f of readyFiles.data.files || []) {
+    if (f.id) {
+      await drive.files.delete({ fileId: f.id, supportsAllDrives: true });
+      console.log(`[crawler] Deleted READY file: ${f.id}`);
+    }
+  }
+
+  // Create a PROCESSED file
+  await drive.files.create({
+    requestBody: {
+      name: "PROCESSED",
+      mimeType: "application/vnd.google-apps.document",
+      parents: [dateFolderId],
+    },
+    supportsAllDrives: true,
+  });
+  console.log(`[crawler] Created PROCESSED marker in folder ${dateFolderId}`);
+}
+
+/**
+ * Scan the Uploads Drive hierarchy and return all date folders with metadata.
+ * Used by the worker's scan trigger to discover folders for the Ava UI.
+ */
+export async function scanUploadsDrive(uploadsDriveId: string): Promise<{
+  folderId: string;
+  path: string;
+  producer: string;
+  software: string;
+  date: string;
+  videoCount: number;
+  hasReady: boolean;
+  hasProcessed: boolean;
+}[]> {
+  const results: {
+    folderId: string;
+    path: string;
+    producer: string;
+    software: string;
+    date: string;
+    videoCount: number;
+    hasReady: boolean;
+    hasProcessed: boolean;
+  }[] = [];
+
+  // Level 1: Producer folders
+  const producers = await listFolders(uploadsDriveId);
+
+  for (const producer of producers) {
+    // Level 2: Software folders
+    const softwareFolders = await listFolders(producer.id);
+
+    for (const software of softwareFolders) {
+      // Level 3: Date folders
+      const dateFolders = await listFolders(software.id);
+
+      for (const dateFolder of dateFolders) {
+        // Count video files
+        const allFiles = await listChildren(dateFolder.id);
+        const videoCount = allFiles.filter((f) =>
+          VIDEO_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext))
+        ).length;
+
+        if (videoCount === 0) continue; // Skip empty date folders
+
+        // Check for READY / PROCESSED signals
+        const hasReady = allFiles.some((f) => f.name.toUpperCase() === "READY");
+        const hasProcessed = allFiles.some((f) => f.name.toUpperCase() === "PROCESSED");
+
+        results.push({
+          folderId: dateFolder.id,
+          path: `${producer.name}/${software.name}/${dateFolder.name}`,
+          producer: producer.name,
+          software: software.name,
+          date: dateFolder.name,
+          videoCount,
+          hasReady,
+          hasProcessed,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
 /**
  * Find a subfolder by name inside a parent. Returns null if not found.
  */

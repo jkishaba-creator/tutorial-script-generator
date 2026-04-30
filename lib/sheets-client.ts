@@ -187,3 +187,122 @@ export async function writeVideoMetadata(
 
   console.log(`[sheets] Wrote row ${sheetRow} for "${data.title}" in tab "${tabName}"`);
 }
+
+// ---------------------------------------------------------------------------
+// Batch Write — Ava UI Folder Export
+// ---------------------------------------------------------------------------
+
+/**
+ * Write an entire folder's worth of video metadata to a Google Sheet tab.
+ * This is an atomic batch write — all rows or none.
+ *
+ * Row 1: Folder link header
+ * Row 2: Column headers
+ * Row 3+: Data rows (sorted alphabetically by filename)
+ */
+export async function writeFolderBatch(
+  spreadsheetId: string,
+  tabName: string,
+  folderLink: string,
+  videos: { filename: string; title: string | null; thumbnailText: string | null; chapters: string | null; description: string | null; tags: string | null }[]
+): Promise<void> {
+  const sheets = getSheetsClient();
+
+  // Sort videos alphabetically by filename
+  const sorted = [...videos].sort((a, b) => a.filename.localeCompare(b.filename));
+
+  // Check if the tab already exists
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties",
+  });
+
+  const existingSheet = spreadsheet.data.sheets?.find(
+    (s) => s.properties?.title === tabName
+  );
+
+  let sheetId: number;
+
+  if (existingSheet) {
+    sheetId = existingSheet.properties?.sheetId ?? 0;
+    console.log(`[sheets] Tab "${tabName}" already exists — overwriting data.`);
+  } else {
+    // Create the tab
+    const addSheetResponse = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: tabName,
+              },
+            },
+          },
+        ],
+      },
+    });
+    sheetId = addSheetResponse.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0;
+    console.log(`[sheets] Created tab "${tabName}" (sheetId: ${sheetId})`);
+  }
+
+  // Build rows
+  const headerRow = ["📁 YouTube Drive Folder", folderLink ? `=HYPERLINK("${folderLink}", "Open Folder")` : ""];
+  const columnHeaders = ["#", "Filename", "Title", "Thumbnail Text", "Chapters", "Description", "Tags"];
+  const dataRows = sorted.map((v, i) => [
+    i + 1,
+    v.filename,
+    v.title || "",
+    v.thumbnailText || "",
+    v.chapters || "",
+    v.description || "",
+    v.tags || "",
+  ]);
+
+  const allRows = [headerRow, columnHeaders, ...dataRows];
+
+  // Write all rows at once
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${tabName}'!A1:G${allRows.length}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: allRows,
+    },
+  });
+
+  // Format: bold header row, set column widths
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        // Bold folder link row
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+            cell: { userEnteredFormat: { textFormat: { bold: true } } },
+            fields: "userEnteredFormat.textFormat.bold",
+          },
+        },
+        // Bold column headers
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 1, endRowIndex: 2 },
+            cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } } },
+            fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.backgroundColor",
+          },
+        },
+        // Column widths
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 40 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 350 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 }, properties: { pixelSize: 200 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 4, endIndex: 5 }, properties: { pixelSize: 400 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 6 }, properties: { pixelSize: 400 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 6, endIndex: 7 }, properties: { pixelSize: 250 }, fields: "pixelSize" } },
+      ],
+    },
+  });
+
+  console.log(`[sheets] Wrote ${dataRows.length} rows to "${tabName}" with folder link and formatting.`);
+}
