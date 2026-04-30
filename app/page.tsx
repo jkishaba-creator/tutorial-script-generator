@@ -933,6 +933,45 @@ export default function Home() {
       setIsGeneratingBatch(false);
       setBatchComplete(true);
     }
+  const handleForceExportToSheets = async (folder: any) => {
+    try {
+      const exportFiles = (folder.videoResults || [])
+        .filter((f: any) => f.metadataStatus === "done")
+        .map((f: any) => ({
+          filename: f.filename,
+          title: f.title || "",
+          thumbnailText: f.thumbnailText || "",
+          chapters: f.chapters || "",
+          description: f.description || "",
+          tags: f.tags || ""
+        }));
+
+      if (exportFiles.length === 0) {
+        alert("No completed videos to export.");
+        return;
+      }
+
+      const res = await fetch("/api/export-batch-sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spreadsheetId: spreadsheetId.trim(),
+          tabName: folder.sheetTabName?.trim() || folder.path,
+          folderLink: `https://drive.google.com/drive/folders/${folder.folderId}`,
+          videos: exportFiles,
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || "Sheets export failed");
+      }
+      
+      alert(`Successfully pushed ${exportFiles.length} videos to Google Sheets!`);
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Export failed");
+    }
   };
 
   const handleAddToQueue = async () => {
@@ -2610,6 +2649,15 @@ export default function Home() {
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-3">
+                                  {(folder.stage === "exported" || folder.stage === "done") && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleForceExportToSheets(folder); }}
+                                      className="px-2 py-1 text-[11px] font-medium text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 hover:bg-emerald-400/20 rounded flex items-center gap-1 transition-colors"
+                                      title="Force Write to Sheets"
+                                    >
+                                      <Sheet className="w-3 h-3" /> Sheets
+                                    </button>
+                                  )}
                                   {(folder.stage === "exported" || folder.stage === "done") && errors > 0 && (
                                     <button
                                       onClick={(e) => { e.stopPropagation(); handleRegenerateFailedFolder(folder.folderId, folder.path, folder.sheetTabName); }}
