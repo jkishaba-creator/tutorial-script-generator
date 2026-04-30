@@ -56,6 +56,14 @@ export async function startQueueWorker() {
   console.log("[Queue Worker] Starting on iMac...");
 
   // ── Startup: Crash Recovery ───────────────────────────────────────
+  const kvReady = !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+
+  if (!kvReady) {
+    console.warn("[Queue Worker] ⚠️  KV_REST_API_URL / KV_REST_API_TOKEN not set in .env.local.");
+    console.warn("[Queue Worker] ⚠️  Worker is paused. Add KV credentials and restart the server.");
+    // Don't crash — just idle. The server stays healthy for the Script Generator.
+    return;
+  }
   try {
     const activeBatches = await kvQueue.getActiveBatchIds();
     if (activeBatches.length > 0) {

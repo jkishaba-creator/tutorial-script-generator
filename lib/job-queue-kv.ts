@@ -86,6 +86,9 @@ const KEY = {
   batchJobs: (batchId: string) => `batch:${batchId}:jobs`,
   heartbeat: "imac:heartbeat",
   crawlTrigger: "crawl:trigger",
+  folder: (folderId: string) => `folder:${folderId}`,
+  activeFolders: "folders:active",
+  folderActions: "folder:actions",
 };
 
 // ── Job Queue Operations ─────────────────────────────────────────────
@@ -358,6 +361,138 @@ export const macHeartbeat = {
   async read(): Promise<MacHeartbeat | null> {
     const redis = getRedis();
     const raw = await redis.get<string>(KEY.heartbeat);
+    if (!raw) return null;
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  },
+};
+
+// ── Folder Lifecycle (Ava UI) ────────────────────────────────────────
+
+export type FolderStage =
+  | "raw"       // Videos uploaded, no READY signal
+  | "ready"     // Producer dropped READY file
+  | "rendering" // iMac FFmpeg processing in progress
+  | "rendered"  // All videos on YouTube Drive, awaiting metadata
+  | "exported"  // Metadata generated + written to Google Sheet
+  | "done";     // VA confirmed YouTube upload, raw files eligible for purge
+
+export interface VideoResult {
+  filename: string;
+  driveFileId: string;
+  title: string | null;
+  thumbnailText: string | null;
+  chapters: string | null;
+  description: string | null;
+  tags: string | null;
+  metadataStatus: "pending" | "done" | "error";
+  metadataError: string | null;
+}
+
+export interface KVFolder {
+  folderId: string;          // Google Drive date folder ID
+  path: string;              // "Eli/Cursor/2025-04-30"
+  producer: string;
+  software: string;
+  date: string;
+  stage: FolderStage;
+  batchId: string | null;    // Links to job queue batch when rendering
+  videoCount: number;
+  ytFolderId: string | null; // YouTube Drive folder ID
+  ytFolderLink: string | null;
+  sheetTabName: string | null;
+  addedAt: string;
+  renderedAt: string | null;
+  exportedAt: string | null;
+  doneAt: string | null;
+  videoResults: VideoResult[] | null;
+}
+
+export type FolderAction =
+  | { action: "scan" }
+  | { action: "render"; folderId: string }
+  | { action: "export"; folderId: string }
+  | { action: "done"; folderId: string };
+
+export const folderQueue = {
+  /**
+   * Track a new folder or update an existing one (upsert).
+   */
+  async upsertFolder(folder: KVFolder): Promise<void> {
+    const redis = getRedis();
+    await redis.set(KEY.folder(folder.folderId), JSON.stringify(folder));
+    await redis.sadd(KEY.activeFolders, folder.folderId);
+  },
+
+  /**
+   * Get a single folder by Drive folder ID.
+   */
+  async getFolder(folderId: string): Promise<KVFolder | null> {
+    const redis = getRedis();
+    const raw = await redis.get<string>(KEY.folder(folderId));
+    if (!raw) return null;
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  },
+
+  /**
+   * List all tracked folders, sorted by addedAt descending (newest first).
+   */
+  async getFolders(): Promise<KVFolder[]> {
+    const redis = getRedis();
+    const folderIds = await redis.smembers(KEY.activeFolders);
+    if (!folderIds || folderIds.length === 0) return [];
+
+    const folders = await Promise.all(
+      (folderIds as string[]).map(async (id) => {
+        const raw = await redis.get<string>(KEY.folder(id));
+        if (!raw) return null;
+        return typeof raw === "string" ? JSON.parse(raw) : (raw as KVFolder);
+      })
+    );
+
+    return (folders.filter(Boolean) as KVFolder[]).sort(
+      (a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime()
+    );
+  },
+
+  /**
+   * Update a folder's stage and optional fields.
+   */
+  async updateFolder(
+    folderId: string,
+    update: Partial<Omit<KVFolder, "folderId">>
+  ): Promise<KVFolder | null> {
+    const redis = getRedis();
+    const existing = await folderQueue.getFolder(folderId);
+    if (!existing) return null;
+
+    const updated = { ...existing, ...update };
+    await redis.set(KEY.folder(folderId), JSON.stringify(updated));
+    return updated;
+  },
+
+  /**
+   * Remove a folder from tracking (e.g., after purge).
+   */
+  async removeFolder(folderId: string): Promise<void> {
+    const redis = getRedis();
+    await redis.del(KEY.folder(folderId));
+    await redis.srem(KEY.activeFolders, folderId);
+  },
+
+  /**
+   * Push an action trigger for the iMac worker to pick up.
+   */
+  async pushAction(action: FolderAction): Promise<void> {
+    const redis = getRedis();
+    await redis.rpush(KEY.folderActions, JSON.stringify(action));
+  },
+
+  /**
+   * iMac claims the next action from the queue.
+   */
+  async claimAction(): Promise<FolderAction | null> {
+    const redis = getRedis();
+    const raw = await redis.lpop<string>(KEY.folderActions);
     if (!raw) return null;
     return typeof raw === "string" ? JSON.parse(raw) : raw;
   },

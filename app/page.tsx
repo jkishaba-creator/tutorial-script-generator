@@ -352,7 +352,7 @@ export default function Home() {
   const [pronunciationTable, setPronunciationTable] = useState<PronunciationEntry[]>([]);
   const [showPronunciationEditor, setShowPronunciationEditor] = useState(false);
 
-  // ── Factory Floor state ─────────────────────────────────────────
+  // ── Ava UI state ────────────────────────────────────────────────
   const [macStatus, setMacStatus] = useState<{
     online: boolean;
     status: "online" | "idle" | "offline" | "processing";
@@ -362,11 +362,10 @@ export default function Home() {
     queueDepth: number;
     hasPendingCrawl: boolean;
   } | null>(null);
-  const [isMacStatusLoading, setIsMacStatusLoading] = useState(false);
-  const [factoryBatchProgress, setFactoryBatchProgress] = useState<any | null>(null);
-  const [isTriggering, setIsTriggering] = useState(false);
-  const [factorySpecificDate, setFactorySpecificDate] = useState("");
-  const factoryPollRef = useRef<NodeJS.Timeout | null>(null);
+  const [avaFolders, setAvaFolders] = useState<any[]>([]);
+  const [avaExpandedId, setAvaExpandedId] = useState<string | null>(null);
+  const [avaLoading, setAvaLoading] = useState<string | null>(null); // folderId currently actioning
+  const [avaMessage, setAvaMessage] = useState<string | null>(null);
 
   const masterclassSettingsReady =
     Boolean(title.trim() && softwareName.trim()) &&
@@ -412,7 +411,30 @@ export default function Home() {
     };
     pollMacStatus();
     const macStatusInterval = setInterval(pollMacStatus, 30000);
-    return () => clearInterval(macStatusInterval);
+
+    // Poll Ava folders — smart interval
+    let avaInterval: NodeJS.Timeout;
+    const pollAvaFolders = () => {
+      fetch("/api/factory-folders")
+        .then(res => res.json())
+        .then(data => {
+          if (data.folders) {
+            setAvaFolders(data.folders);
+            // Use faster polling if any folder is actively rendering
+            const hasActive = data.folders.some((f: any) => f.stage === "rendering");
+            clearInterval(avaInterval);
+            avaInterval = setInterval(pollAvaFolders, hasActive ? 15000 : 30000);
+          }
+        })
+        .catch(() => {});
+    };
+    pollAvaFolders();
+    avaInterval = setInterval(pollAvaFolders, 30000);
+
+    return () => {
+      clearInterval(macStatusInterval);
+      clearInterval(avaInterval);
+    };
   }, []);
 
 
@@ -1346,9 +1368,8 @@ export default function Home() {
                   : "border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626]"
               }`}
             >
-              {/* Factory icon */}
               <span className="text-[13px] leading-none">🏭</span>
-              Factory Floor
+              Ava
               {macStatus && (
                 <span className={`w-2 h-2 rounded-full ml-0.5 ${
                   macStatus.status === "processing" ? "bg-blue-400 animate-pulse" :
@@ -2177,140 +2198,188 @@ export default function Home() {
             </div>
           </div>
         ) : mode === "factory" ? (
-          /* ─── Factory Floor Mode ─── */
-          <div className="space-y-6">
-            {/* iMac Status Bar */}
-            <div className="p-4 border border-[#262626] rounded-[10px] bg-[#0c0c0d] flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
-                  !macStatus ? "bg-[#444] animate-pulse" :
+          /* ─── Ava UI — Uploader Dashboard ─── */
+          <div className="space-y-5">
+            {/* iMac status + header */}
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-[#e2e2e2] flex items-center gap-2">
+                <span className="text-lg">🏭</span>
+                Ava — Upload Manager
+              </h2>
+              <div className="flex items-center gap-2 text-xs text-[#8a8a8b]">
+                <div className={`w-2 h-2 rounded-full ${
+                  !macStatus ? "bg-[#444]" :
                   macStatus.status === "processing" ? "bg-blue-400 animate-pulse" :
                   macStatus.online ? "bg-emerald-400" : "bg-red-500"
                 }`} />
-                <div>
-                  <div className="text-sm font-semibold text-[#e2e2e2]">
-                    {!macStatus ? "Checking iMac status..." :
-                     macStatus.status === "processing" ? "🎬 iMac is Processing" :
-                     macStatus.online ? "🟢 iMac Online & Idle" : "🔴 iMac Offline"}
-                  </div>
-                  {macStatus && (
-                    <div className="text-xs text-[#8a8a8b] mt-0.5 space-x-3">
-                      {macStatus.lastSeen && <span>Last seen: {macStatus.lastSeen}</span>}
-                      <span>{macStatus.queueDepth} job(s) queued</span>
-                      <span>{macStatus.jobsProcessedToday} processed today</span>
-                      {macStatus.hasPendingCrawl && <span className="text-amber-400">⏳ Crawl pending...</span>}
-                    </div>
-                  )}
-                  {macStatus?.currentJob && (
-                    <div className="text-xs text-blue-400 mt-0.5 font-mono truncate max-w-xs">
-                      {macStatus.currentJob}
-                    </div>
-                  )}
-                </div>
+                {!macStatus ? "Checking..." : macStatus.online ? "iMac Online" : "iMac Offline"}
               </div>
-              <button
-                onClick={() => {
-                  setIsMacStatusLoading(true);
-                  fetch("/api/mac-status")
-                    .then(r => r.json())
-                    .then(data => { setMacStatus(data); setIsMacStatusLoading(false); })
-                    .catch(() => setIsMacStatusLoading(false));
-                }}
-                className="px-3 py-1.5 text-xs rounded-[6px] border border-[#262626] bg-[#161618] text-[#8a8a8b] hover:text-[#e2e2e2] hover:border-[#444] transition-colors flex items-center gap-1.5"
-              >
-                {isMacStatusLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "↻"}
-                Refresh
-              </button>
             </div>
 
-            {/* Trigger Controls */}
-            <div className="p-5 border border-[#262626] rounded-[10px] bg-[#0c0c0d]">
-              <h2 className="text-sm font-semibold text-[#e2e2e2] mb-4 flex items-center gap-2">
-                <span className="text-base">🚀</span>
-                Queue New Batch
-              </h2>
-              <div className="space-y-3">
-                <div>
-                  <label className="text-xs uppercase tracking-wider text-[#8a8a8b] mb-1.5 block">
-                    Filter by Date <span className="text-[#444]">(optional — leave blank for full crawl)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={factorySpecificDate}
-                    onChange={(e) => setFactorySpecificDate(e.target.value)}
-                    placeholder="YYYY-MM-DD  e.g. 2025-04-30"
-                    className="w-full px-3 py-2 bg-[#161618] border border-[#262626] rounded-[6px] text-sm text-[#e2e2e2] placeholder-[#444] font-mono focus:outline-none focus:border-[#444]"
-                    disabled={isTriggering}
-                  />
-                </div>
-                <button
-                  onClick={async () => {
-                    setIsTriggering(true);
-                    try {
-                      const body: any = {};
-                      if (factorySpecificDate.trim()) body.specificDate = factorySpecificDate.trim();
-                      const res = await fetch("/api/process-batch", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(body),
-                      });
-                      const data = await res.json();
-                      if (!res.ok) throw new Error(data.error || "Failed to trigger batch");
-                      // Start polling for queue status after triggering
-                      setFactoryBatchProgress({ statusLine: data.message, isComplete: false, summary: { total: 0, done: 0, queued: data.currentQueueDepth, processing: 0, errors: 0, skipped: 0 } });
-                    } catch (err: any) {
-                      alert("Error: " + err.message);
-                    } finally {
-                      setIsTriggering(false);
-                    }
-                  }}
-                  disabled={isTriggering}
-                  className="w-full px-4 py-2.5 rounded-[8px] bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
-                >
-                  {isTriggering ? (
-                    <><Loader2 className="w-4 h-4 animate-spin" /> Sending signal to iMac...</>
-                  ) : (
-                    <>{factorySpecificDate.trim() ? `🎯 Process ${factorySpecificDate}` : "🏭 Process Full Drive"}</>
-                  )}
+            {/* Status message toast */}
+            {avaMessage && (
+              <div className="p-3 bg-[#161618] border border-[#262626] rounded-[8px] text-sm text-[#8a8a8b] flex items-center justify-between">
+                <span>{avaMessage}</span>
+                <button onClick={() => setAvaMessage(null)} className="text-[#444] hover:text-[#8a8a8b]">
+                  <X className="w-3.5 h-3.5" />
                 </button>
-                <p className="text-[11px] text-[#444] text-center">
-                  The iMac will receive this signal within ~60 seconds, crawl Google Drive, and begin processing.
-                </p>
               </div>
-            </div>
+            )}
 
-            {/* Batch Progress */}
-            {factoryBatchProgress ? (
-              <div className="p-5 border border-[#262626] rounded-[10px] bg-[#0c0c0d]">
-                <h3 className="text-sm font-semibold text-[#e2e2e2] mb-3">📡 Queue Status</h3>
-                <div className="text-sm text-[#8a8a8b]">{factoryBatchProgress.statusLine}</div>
-                {factoryBatchProgress.summary && (
-                  <div className="grid grid-cols-3 gap-3 mt-4">
-                    {[
-                      { label: "Queued", value: factoryBatchProgress.summary.queued, color: "text-amber-400" },
-                      { label: "Done", value: factoryBatchProgress.summary.done, color: "text-emerald-400" },
-                      { label: "Errors", value: factoryBatchProgress.summary.errors, color: "text-red-400" },
-                    ].map(({ label, value, color }) => (
-                      <div key={label} className="p-3 bg-[#161618] rounded-[8px] border border-[#262626] text-center">
-                        <div className={`text-2xl font-bold ${color}`}>{value}</div>
-                        <div className="text-xs text-[#8a8a8b] mt-1">{label}</div>
+            {/* Folder Table */}
+            <div className="border border-[#262626] rounded-[10px] bg-[#0c0c0d] overflow-hidden">
+              {/* Table Header */}
+              <div className="grid grid-cols-[1fr_80px_120px_130px] px-4 py-2.5 border-b border-[#262626] bg-[#0a0a0b] text-xs uppercase tracking-wider text-[#666]">
+                <span>Folder</span>
+                <span className="text-center">Videos</span>
+                <span className="text-center">Status</span>
+                <span className="text-right">Action</span>
+              </div>
+
+              {/* Folder Rows */}
+              {avaFolders.length === 0 ? (
+                <div className="p-8 text-center text-sm text-[#444]">
+                  No folders tracked yet. The iMac auto-scans Drive every 10 minutes,
+                  or folders will appear here when you trigger processing.
+                </div>
+              ) : (
+                avaFolders.map((folder) => {
+                  const isExpanded = avaExpandedId === folder.folderId;
+                  const isActioning = avaLoading === folder.folderId;
+
+                  // Stage badge config
+                  const stageBadge: Record<string, { label: string; color: string }> = {
+                    raw: { label: "🟡 Raw", color: "text-yellow-400" },
+                    ready: { label: "🟠 Ready", color: "text-orange-400" },
+                    rendering: { label: "🔵 Rendering", color: "text-blue-400" },
+                    rendered: { label: "🟢 Rendered", color: "text-emerald-400" },
+                    exported: { label: "📋 Exported", color: "text-purple-400" },
+                    done: { label: "☑️ Done", color: "text-[#666]" },
+                  };
+                  const badge = stageBadge[folder.stage] || { label: folder.stage, color: "text-[#8a8a8b]" };
+
+                  // Progress text for rendering
+                  let progressText = "";
+                  if (folder.stage === "rendering" && folder.progress) {
+                    const p = folder.progress;
+                    progressText = `${p.done}/${p.total}`;
+                  }
+
+                  // Action button config
+                  const actionConfig: Record<string, { label: string; emoji: string; action: string } | null> = {
+                    raw: null,
+                    ready: { label: "Render", emoji: "▶", action: "render" },
+                    rendering: null,
+                    rendered: { label: "Generate & Export", emoji: "📝", action: "export" },
+                    exported: { label: "Mark Done", emoji: "✓", action: "done" },
+                    done: null,
+                  };
+                  const act = actionConfig[folder.stage];
+
+                  return (
+                    <div key={folder.folderId} className={`border-b border-[#1a1a1a] last:border-b-0 ${
+                      folder.stage === "done" ? "opacity-50" : ""
+                    }`}>
+                      {/* Main row */}
+                      <div
+                        className="grid grid-cols-[1fr_80px_120px_130px] px-4 py-3 items-center cursor-pointer hover:bg-[#111] transition-colors"
+                        onClick={() => setAvaExpandedId(isExpanded ? null : folder.folderId)}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-[#666] flex-shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-[#666] flex-shrink-0" />}
+                          <span className="text-sm text-[#e2e2e2] truncate">{folder.path}</span>
+                        </div>
+                        <span className="text-sm text-[#8a8a8b] text-center">
+                          {folder.videoCount}{progressText ? ` (${progressText})` : ""}
+                        </span>
+                        <span className={`text-xs font-medium text-center ${badge.color}`}>
+                          {badge.label}
+                        </span>
+                        <div className="text-right" onClick={(e) => e.stopPropagation()}>
+                          {act && (
+                            <button
+                              onClick={async () => {
+                                setAvaLoading(folder.folderId);
+                                try {
+                                  const res = await fetch("/api/factory-folders", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: act.action, folderId: folder.folderId }),
+                                  });
+                                  const data = await res.json();
+                                  if (!res.ok) throw new Error(data.error);
+                                  setAvaMessage(data.message);
+                                  // Refresh folder list
+                                  const refreshRes = await fetch("/api/factory-folders");
+                                  const refreshData = await refreshRes.json();
+                                  if (refreshData.folders) setAvaFolders(refreshData.folders);
+                                } catch (err: any) {
+                                  setAvaMessage(`❌ ${err.message}`);
+                                } finally {
+                                  setAvaLoading(null);
+                                }
+                              }}
+                              disabled={isActioning}
+                              className="px-3 py-1.5 text-xs font-medium rounded-[6px] bg-[#161618] border border-[#262626] text-[#e2e2e2] hover:bg-[#1a1a1c] hover:border-[#444] transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                            >
+                              {isActioning ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>{act.emoji}</span>}
+                              {act.label}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  onClick={() => {
-                    fetch("/api/mac-status")
-                      .then(r => r.json())
-                      .then(data => setMacStatus(data))
-                      .catch(() => {});
-                  }}
-                  className="mt-3 text-xs text-[#8a8a8b] hover:text-[#e2e2e2] transition-colors"
-                >
-                  ↻ Refresh status
-                </button>
-              </div>
-            ) : null}
+
+                      {/* Expanded detail */}
+                      {isExpanded && (
+                        <div className="px-4 pb-4 pt-1 bg-[#0a0a0b] border-t border-[#1a1a1a]">
+                          {folder.ytFolderLink && (
+                            <a
+                              href={folder.ytFolderLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 mb-3"
+                            >
+                              <Link className="w-3 h-3" />
+                              Open YouTube Drive Folder
+                            </a>
+                          )}
+                          {folder.sheetTabName && (
+                            <div className="text-xs text-[#8a8a8b] mb-3">
+                              📊 Sheet tab: <span className="text-[#e2e2e2] font-mono">{folder.sheetTabName}</span>
+                            </div>
+                          )}
+
+                          {folder.videoResults && folder.videoResults.length > 0 ? (
+                            <div className="space-y-1">
+                              {folder.videoResults.map((v: any, i: number) => (
+                                <div key={i} className="grid grid-cols-[24px_1fr_60px_60px] items-center text-xs py-1.5 px-2 rounded bg-[#0c0c0d]">
+                                  <span className="text-[#666]">{i + 1}</span>
+                                  <span className="text-[#e2e2e2] truncate font-mono text-[11px]">{v.filename}</span>
+                                  <span className="text-center">{v.driveFileId ? "✅" : "—"}</span>
+                                  <span className="text-center">{v.metadataStatus === "done" ? "✅" : v.metadataStatus === "error" ? "❌" : "—"}</span>
+                                </div>
+                              ))}
+                              <div className="grid grid-cols-[24px_1fr_60px_60px] text-[10px] uppercase tracking-wider text-[#444] mt-1 px-2">
+                                <span></span>
+                                <span></span>
+                                <span className="text-center">Render</span>
+                                <span className="text-center">Meta</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-[#444]">
+                              {folder.stage === "raw" || folder.stage === "ready"
+                                ? "Videos will appear here after rendering starts."
+                                : "No video details available."}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         ) : (
           /* ─── Chapters Mode ─── */
