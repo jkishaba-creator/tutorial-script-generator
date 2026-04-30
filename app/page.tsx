@@ -953,12 +953,19 @@ export default function Home() {
         return;
       }
 
+      const defaultName = folder.sheetTabName?.trim() || folder.path;
+      const customTabName = window.prompt("Enter a unique Google Sheets Tab Name for this folder:\n\n(If it matches an existing tab, it will overwrite it)", defaultName);
+      
+      if (customTabName === null) return; // User cancelled
+
+      const finalTabName = customTabName.trim() || defaultName;
+
       const res = await fetch("/api/export-batch-sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           spreadsheetId: spreadsheetId.trim(),
-          tabName: folder.sheetTabName?.trim() || folder.path,
+          tabName: finalTabName,
           folderLink: `https://drive.google.com/drive/folders/${folder.folderId}`,
           videos: exportFiles,
         })
