@@ -166,12 +166,12 @@ export async function writeVideoMetadata(
   const combinedContent = [
     data.title,
     "",
-    data.chapters,
-    "",
     data.description,
     "",
+    data.chapters,
+    "",
     data.tags,
-  ].join("\n");
+  ].join("\n").trim();
 
   // rowIndex 0 maps to sheet row 2 (row 1 is header)
   const sheetRow = rowIndex + 2;
@@ -248,16 +248,17 @@ export async function writeFolderBatch(
 
   // Build rows
   const headerRow = ["📁 YouTube Drive Folder", folderLink ? `=HYPERLINK("${folderLink}", "Open Folder")` : "", ""];
-  const columnHeaders = ["Title", "Thumbnail Text", "Combined Text"];
+  const columnHeaders = ["Title", "Thumbnail Text", "Combined Content"];
   const dataRows = sorted.map((v) => {
-    const parts = [
-      v.title || v.filename,
+    const combinedContent = [
+      v.title || "",
+      "",
       v.description || "",
+      "",
       v.chapters || "",
-      v.tags ? `Hashtags\n\n${v.tags}` : ""
-    ].filter(p => p.trim() !== "");
-    
-    const combinedContent = parts.join("\n\n");
+      "",
+      v.tags || "",
+    ].join("\n").trim();
 
     return [
       v.title || v.filename,
@@ -300,9 +301,9 @@ export async function writeFolderBatch(
           },
         },
         // Column widths
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 200 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 600 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 400 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 800 }, fields: "pixelSize" } },
       ],
     },
   });
