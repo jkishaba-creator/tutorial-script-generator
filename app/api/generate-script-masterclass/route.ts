@@ -1,5 +1,8 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { getPromptsDB, buildFinalPrompt, computeTimingVars } from "@/lib/prompts-db";
+import { formatDNAContext } from "@/lib/architect";
+import type { ArchitectDNA } from "@/lib/architect";
 
 type UseCaseInput = { taskName: string; instructions: string };
 
@@ -79,15 +82,36 @@ export async function POST(request: NextRequest) {
       (u) => `Task: ${u.taskName.trim()}\nInstructions:\n${u.instructions.trim()}`
     );
     const dataBlock = dataBlockLines.join("\n\n---\n\n");
+    
+    const db = getPromptsDB();
+    const presetId = body.presetId;
+    
+    let preset = db.presets.find(p => p.id === presetId);
+    if (!preset) {
+      preset = db.presets.find(p => p.type === "masterclass" && p.isDefault) || db.presets[1];
+    }
 
-    const systemPrompt = `Take the following multi-use-case instructions and transform them into a detailed, natural-sounding masterclass script when read aloud. Your script must be approximately ${minWordCount}-${maxWordCount} words long (target: ${targetWordCount} words). There are ${numberOfUseCases} distinct use cases to cover. To ensure the script stays within the target length, you should allocate approximately ${wordsPerUseCase} words per use case. Each use case contains a set of step-by-step instructions; please synthesize these steps into a fluid, conversational explanation that fits within the allocated word count for that specific use case. The script should be easy to follow, instructional, and conversational, with a focus on clarity and thoroughness. Make sure to provide explanations, context, and additional tips where necessary to enhance understanding, but do not add any new steps or use cases. The script should be well-structured and flow naturally for an AI voiceover. Do not add step numbers or anything other than the script which should be read. You must remove sensitive info such as names, emails, passwords, API keys, phone numbers, etc., from your script.
+    const timingVars = computeTimingVars(targetWordCount, preset.wpm || 150, numberOfUseCases);
+    const basePrompt = buildFinalPrompt(preset, db.globalRules);
 
-Start the script EXACTLY with this phrasing, filling in the dynamically generated list of use cases: 'In today's video, I'm going to show you the best use cases for ${softwareName.trim()}. We're going to go over how to ${taskNamesList}.' Do NOT output a title line or a word count / voice-over length line at the top—output only the script to be read aloud, starting with that opening line. Ensure the script meets or slightly exceeds the target word count when read aloud (about 190 words per minute). Please do not add weird rhetorical questions or random stuff that deviates from the intention of the script/video. You must NOT include bullet points or Bold text in your answer, as those aren't generally found on scripts. The structure of the script should follow this repeating order for every use case provided:
-'The [first/next/final] use case I'm going to teach you is how to [Task Name]' [Task Instructions]
+    // Format DNA context string
+    const dna = body.architectDNA as ArchitectDNA | undefined;
+    const dnaContext = dna ? formatDNAContext(dna) : "";
 
-Here is the data for this video: Software Name: ${softwareName.trim()} Video Title: ${title.trim()} Target Length: ${targetWordCount} words
-
-${dataBlock}`;
+    const systemPrompt = basePrompt
+      .replace(/\{\{DNA_CONTEXT\}\}/g, dnaContext)
+      .replace(/\{\{TARGET_MINUTES\}\}/g, timingVars.TARGET_MINUTES)
+      .replace(/\{\{WPM\}\}/g, timingVars.WPM)
+      .replace(/\{\{SECONDS_PER_USE_CASE\}\}/g, timingVars.SECONDS_PER_ITEM)
+      .replace(/\{\{WORDS_PER_USE_CASE\}\}/g, wordsPerUseCase.toString())
+      .replace(/\{\{MIN_WORD_COUNT\}\}/g, minWordCount.toString())
+      .replace(/\{\{MAX_WORD_COUNT\}\}/g, maxWordCount.toString())
+      .replace(/\{\{TARGET_WORD_COUNT\}\}/g, targetWordCount.toString())
+      .replace(/\{\{NUMBER_OF_USE_CASES\}\}/g, numberOfUseCases.toString())
+      .replace(/\{\{SOFTWARE_NAME\}\}/g, softwareName.trim())
+      .replace(/\{\{TASK_NAMES_LIST\}\}/g, taskNamesList)
+      .replace(/\{\{TITLE\}\}/g, title.trim())
+      .replace(/\{\{DATA_BLOCK\}\}/g, dataBlock);
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });

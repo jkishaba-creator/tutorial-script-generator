@@ -14,7 +14,7 @@ export function getServiceAccountCredentials(): Record<string, string> {
   }
 }
 
-/** Build a Google Drive client authenticated via service account. */
+/** Build a Google Drive client authenticated via service account (read-only). */
 export function getDriveClient() {
   const credentials = getServiceAccountCredentials();
 
@@ -22,6 +22,21 @@ export function getDriveClient() {
     credentials,
     scopes: [
       "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ],
+  });
+
+  return google.drive({ version: "v3", auth });
+}
+
+/** Build a Google Drive client with full read/write access (for uploads). */
+export function getDriveClientReadWrite() {
+  const credentials = getServiceAccountCredentials();
+
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: [
+      "https://www.googleapis.com/auth/drive",
       "https://www.googleapis.com/auth/spreadsheets",
     ],
   });

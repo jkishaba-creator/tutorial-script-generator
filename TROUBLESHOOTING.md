@@ -1,65 +1,35 @@
 # Troubleshooting Guide
 
-## Error -102: Connection Refused
-
-This error means the Next.js development server isn't running or isn't accessible.
-
-### Step 1: Check if Node.js is installed
-
-Run this command in your terminal:
+## 1. Error 500: Cannot find module './chunks/vendor-chunks/next.js'
+**Symptom**: You ran `npm run build` or the dev server was forcefully interrupted, and now hitting the API or UI returns a 500 Error.
+**Cause**: The Next.js `.next` build cache is corrupted.
+**Solution**:
+Kill the server, delete the cache, and restart.
 ```bash
-node --version
-npm --version
-```
-
-If these commands don't work, you need to install Node.js:
-- Visit https://nodejs.org/ and download the LTS version
-- Or use Homebrew: `brew install node`
-
-### Step 2: Install Dependencies
-
-Navigate to the project directory and install dependencies:
-```bash
-cd /Users/joshuakishaba/video-script-generator
-npm install
-```
-
-This will install all required packages including Next.js, React, and the API libraries.
-
-### Step 3: Start the Development Server
-
-After dependencies are installed, start the server:
-```bash
+lsof -i :3000 -t | xargs kill -9
+rm -rf .next
 npm run dev
 ```
 
-You should see output like:
-```
-▲ Next.js 14.x.x
-- Local:        http://localhost:3000
-```
+## 2. Google Drive "Processing" Screen
+**Symptom**: After the Conveyor Belt finishes a video, you look in Google Drive and see: *"It's taking longer than expected to process this video file for playback."*
+**Cause**: This is **100% normal behavior**. Google Drive transcodes all uploaded videos to various resolutions (360p, 720p) for its web player, which takes 5-15 minutes.
+**Impact**: This does **not** affect Gemini or downstream systems. APIs download the raw MP4 bytes instantly. You do not need to wait for Drive to finish processing.
 
-### Step 4: Access the Application
+## 3. Conveyor Belt Purge 404 Errors
+**Symptom**: The terminal logs say `[drive-crawler] Cleanup failed for skipped file: GaxiosError: File not found`.
+**Cause**: The file was already manually deleted, or there was a permission sync delay.
+**Solution**: Ignore it. The crawler automatically catches this error and continues running safely. It does not break the pipeline.
 
-Once the server is running, open your browser and navigate to:
-```
-http://localhost:3000
-```
+## 4. Error -102: Connection Refused
+**Symptom**: The Next.js development server isn't running or accessible.
+**Solution**:
+1. Check if Node is installed (`node --version`).
+2. Install dependencies (`npm install`).
+3. Start the server (`npm run dev`).
 
-### Common Issues
-
-1. **Port 3000 already in use**: 
-   - Kill the process using port 3000, or
-   - Run `npm run dev -- -p 3001` to use a different port
-
-2. **Missing API keys**:
-   - Create `.env.local` file from `.env.local.example`
-   - Add your `GEMINI_API_KEY` and `ELEVENLABS_API_KEY`
-
-3. **Module not found errors**:
-   - Delete `node_modules` folder and `package-lock.json`
-   - Run `npm install` again
-
-4. **TypeScript errors**:
-   - Make sure all dependencies are installed
-   - Run `npm install` to ensure everything is up to date
+## 5. Port 3000 already in use
+**Symptom**: Terminal says `EADDRINUSE: address already in use :::3000`.
+**Solution**:
+1. Find and kill the process: `lsof -i :3000 -t | xargs kill -9`
+2. Start the server again.

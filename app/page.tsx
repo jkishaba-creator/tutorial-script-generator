@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet } from "lucide-react";
+import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link } from "lucide-react";
 
 type Mode = "single" | "masterclass" | "chapters";
-type ChapterBatchMode = "single" | "batch";
+type ChapterBatchMode = "single" | "batch" | "multi-id";
 type UseCaseEntry = { taskName: string; instructions: string };
 
 interface BatchFile {
@@ -20,6 +20,252 @@ interface BatchFile {
   errorCategory?: string;
   sheetsStatus?: "pending" | "writing" | "written" | "error";
   sheetsError?: string;
+}
+
+interface PromptSection {
+  key: string;              // "persona" | "tone" | "timing" | "content" | "rules" | "vocal" | "reference" | "data"
+  label: string;
+  content: string;
+  isReference?: boolean;
+  requiredVars?: string[];
+  productionRole?: string;
+}
+
+interface PromptPreset {
+  id: string;
+  name: string;
+  type: "solo" | "masterclass";
+  isDefault?: boolean;
+  isDraft?: boolean;
+  content?: string; // Legacy
+  sections?: PromptSection[];
+  wpm?: number;
+}
+
+interface PronunciationEntry {
+  original: string;
+  phonetic: string;
+  caseSensitive: boolean;
+}
+
+interface StepTiming {
+  name: string;
+  allocatedSeconds: number;
+  complexity: "simple" | "moderate" | "complex";
+  transitionHint: string;
+}
+
+interface ArchitectDNA {
+  painPoint: string;
+  authorityAnchor: string;
+  coreTransformation: string;
+  hookStyle: "curiosity" | "bold_statement" | "teaser";
+  hookDraft: string;
+  bridgeDraft: string;
+  timingMap: {
+    hookSeconds: number;
+    bridgeSeconds: number;
+    steps: StepTiming[];
+    closingSeconds: number;
+  };
+}
+
+interface PromptsDB {
+  presets: PromptPreset[];
+  globalRules: string;
+  pronunciationTable: PronunciationEntry[];
+  pauseTokens?: Record<string, Record<string, string>>;
+  version: number;
+}
+
+function PresetEditor({
+  preset,
+  globalRules,
+  onChange,
+  onSave,
+  onSaveGlobalRules,
+  isSaving,
+  error
+}: {
+  preset: PromptPreset;
+  globalRules: string;
+  onChange: (p: PromptPreset) => void;
+  onSave: (asNew: boolean) => void;
+  onSaveGlobalRules: (val: string) => void;
+  isSaving: boolean;
+  error: string | null;
+}) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [globalExpanded, setGlobalExpanded] = useState(false);
+  
+  const handleSectionChange = (index: number, content: string) => {
+    if (!preset.sections) return;
+    const newSections = [...preset.sections];
+    newSections[index] = { ...newSections[index], content };
+    onChange({ ...preset, sections: newSections });
+  };
+
+  const toggleSection = (key: string) => {
+    setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const activeGlobalRulesCount = globalRules.split('\n').filter(l => l.trim()).length;
+
+  // Insert Global Rules dynamically before Reference Examples
+  // To keep rendering simple, we render the preset sections, but we splice Global Rules right before Data Injection visually.
+  // Actually, rendering sequentially is fine. Let's find the index of "reference" or "data"
+  
+  return (
+    <div className="space-y-3 p-3 bg-[#111111] border border-[#262626] rounded-[6px] animate-in slide-in-from-top-2 duration-200">
+      {error && <div className="text-xs text-red-400 mb-2">{error}</div>}
+      
+      <div className="flex gap-2 items-center mb-2">
+        <input 
+          type="text" 
+          value={preset.name} 
+          onChange={e => onChange({...preset, name: e.target.value})} 
+          className="ink-input w-full px-3 py-2 text-sm disabled:opacity-50 font-semibold" 
+          placeholder="Preset Name" 
+        />
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] uppercase text-[#8a8a8b] whitespace-nowrap">WPM</label>
+          <input 
+            type="number" 
+            value={preset.wpm || 150} 
+            onChange={e => onChange({...preset, wpm: parseInt(e.target.value) || 150})} 
+            className="ink-input w-20 px-2 py-2 text-sm text-center disabled:opacity-50" 
+          />
+        </div>
+      </div>
+
+      {preset.sections ? (
+        <div className="space-y-2">
+          {preset.sections.map((section, idx) => {
+            const isExpanded = expanded[section.key];
+            const hasRequiredVars = section.requiredVars && section.requiredVars.length > 0;
+            const isGlobalInsertPoint = section.key === "reference" || section.key === "data";
+            const prevSection = idx > 0 ? preset.sections![idx - 1] : null;
+            
+            // We want Global Rules to render immediately after Vocal Performance (or Rules)
+            const shouldRenderGlobalHere = section.key === "reference" || (section.key === "data" && !preset.sections!.find(s => s.key === "reference"));
+
+            return (
+              <div key={section.key}>
+                {shouldRenderGlobalHere && (
+                  <div className="border border-[#262626] rounded-[4px] bg-[#161618] overflow-hidden mb-2 shadow-lg">
+                    <div 
+                      className="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-[#1a1a1c] transition-colors"
+                      onClick={() => setGlobalExpanded(!globalExpanded)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Link className="w-3.5 h-3.5 text-[#8a8a8b]" />
+                        <span className="text-xs font-semibold text-[#e2e2e2] uppercase tracking-wider">Global Rules</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#262626] text-[#e2e2e2]">
+                          {activeGlobalRulesCount} Active Constraint{activeGlobalRulesCount !== 1 ? "s" : ""}
+                        </span>
+                        {globalExpanded ? <ChevronUp className="w-4 h-4 text-[#8a8a8b]" /> : <ChevronDown className="w-4 h-4 text-[#8a8a8b]" />}
+                      </div>
+                    </div>
+                    {globalExpanded && (
+                      <div className="p-3 border-t border-[#262626] bg-[#0c0c0d]">
+                        <textarea 
+                          value={globalRules}
+                          onChange={(e) => onSaveGlobalRules(e.target.value)}
+                          placeholder="Enter global rules that apply to ALL presets..."
+                          className="w-full bg-transparent text-sm font-mono text-[#e2e2e2] outline-none resize-y min-h-[80px]"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                <div className="border border-[#262626] rounded-[4px] bg-[#161618] overflow-hidden">
+                  <div 
+                    className={`px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-[#1a1a1c] transition-colors ${section.isReference ? "border-l-2 border-violet-500" : ""} ${section.key === "data" ? "border-l-2 border-amber-500" : ""}`}
+                    onClick={() => toggleSection(section.key)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-[#e2e2e2] uppercase tracking-wider">{section.label}</span>
+                      {section.productionRole && <span className="text-[10px] text-[#8a8a8b]">({section.productionRole})</span>}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {hasRequiredVars && (
+                        <div className="flex gap-1">
+                          {section.requiredVars!.map(v => {
+                            const isPresent = section.content.includes(v);
+                            return (
+                              <span key={v} className={`text-[10px] px-1.5 py-0.5 rounded ${isPresent ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`} title={v}>
+                                {isPresent ? "✅" : "⚠️"} {v.replace(/[{}]/g, "")}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {isExpanded ? <ChevronUp className="w-4 h-4 text-[#8a8a8b]" /> : <ChevronDown className="w-4 h-4 text-[#8a8a8b]" />}
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div className="p-3 border-t border-[#262626] bg-[#0c0c0d]">
+                      {section.key === "data" && (
+                        <div className="mb-2 text-[10px] text-amber-400 bg-amber-400/10 p-1.5 rounded">
+                          ⚠️ This section feeds your video data to the AI. Removing variables here means the AI won&apos;t see that data.
+                        </div>
+                      )}
+                      <textarea 
+                        value={section.content}
+                        onChange={(e) => handleSectionChange(idx, e.target.value)}
+                        placeholder={section.isReference ? "Paste 2-3 paragraphs from a script you loved. The AI will match its tone and rhythm." : ""}
+                        className="w-full bg-transparent text-sm font-mono text-[#e2e2e2] outline-none resize-y min-h-[80px]"
+                      />
+                    </div>
+                  )}
+                  {!isExpanded && section.content.trim() && (
+                    <div className="px-3 pb-2 text-xs text-[#8a8a8b] truncate">
+                      {section.content.replace(/\n/g, " ")}
+                    </div>
+                  )}
+                  {!isExpanded && !section.content.trim() && section.isReference && (
+                    <div className="px-3 pb-2 text-xs text-[#8a8a8b] italic">
+                      (empty — paste a script excerpt to set the tone)
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <textarea 
+          value={preset.content} 
+          onChange={e => onChange({...preset, content: e.target.value})} 
+          className="ink-input w-full px-3 py-2 font-mono text-xs resize-y h-48" 
+        />
+      )}
+
+      <div className="flex justify-between items-center pt-2">
+        <div>
+          {preset.isDraft && (
+            <span className="text-[11px] font-medium text-amber-400 flex items-center gap-1.5 bg-amber-400/10 px-2 py-1 rounded">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Missing required variables
+            </span>
+          )}
+        </div>
+        <div className="flex justify-end gap-2">
+          {!preset.isDefault && (
+            <button type="button" onClick={() => onSave(false)} disabled={isSaving} className="px-3 py-1.5 text-[11px] font-medium text-[#e2e2e2] bg-[#1e1e20] hover:bg-[#262626] rounded-[4px] transition-colors">
+              Overwrite
+            </button>
+          )}
+          <button type="button" onClick={() => onSave(true)} disabled={isSaving} className="px-3 py-1.5 text-[11px] font-medium text-black bg-[#e2e2e2] hover:bg-white rounded-[4px] transition-colors">
+            Save as New
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const INITIAL_USE_CASES: UseCaseEntry[] = [
@@ -63,6 +309,9 @@ export default function Home() {
   const [batchComplete, setBatchComplete] = useState(false);
   const batchAbortRef = useRef(false);
 
+  // Multi-ID batch state
+  const [multiIdInput, setMultiIdInput] = useState("");
+
   // Sheets state
   const [spreadsheetId, setSpreadsheetId] = useState(() => {
     if (typeof window !== "undefined") {
@@ -78,6 +327,29 @@ export default function Home() {
   const [useCases, setUseCases] = useState<UseCaseEntry[]>(() => [...INITIAL_USE_CASES]);
   const [collapsedInstructions, setCollapsedInstructions] = useState<boolean[]>([]);
 
+  // Prompt Preset state
+  const [showPromptSettings, setShowPromptSettings] = useState(false);
+  const [presets, setPresets] = useState<PromptPreset[]>([]);
+  const [globalRules, setGlobalRules] = useState<string>("");
+  const [activeSoloPresetId, setActiveSoloPresetId] = useState<string | null>(null);
+  const [activeMasterclassPresetId, setActiveMasterclassPresetId] = useState<string | null>(null);
+  const [editingPreset, setEditingPreset] = useState<PromptPreset | null>(null);
+  const [promptEditorMode, setPromptEditorMode] = useState<"solo" | "masterclass">("solo");
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const [promptSaveError, setPromptSaveError] = useState<string | null>(null);
+  const [isSavingPrompt, setIsSavingPrompt] = useState(false);
+
+  // Architect state (two-pass is now standard)
+  const [reviewStrategy, setReviewStrategy] = useState(false);
+  const [architectDNA, setArchitectDNA] = useState<ArchitectDNA | null>(null);
+  const [isRunningArchitect, setIsRunningArchitect] = useState(false);
+  const [showDNAInspector, setShowDNAInspector] = useState(false);
+  const [dnaCollapsed, setDnaCollapsed] = useState(true);
+
+  // Pronunciation Table state
+  const [pronunciationTable, setPronunciationTable] = useState<PronunciationEntry[]>([]);
+  const [showPronunciationEditor, setShowPronunciationEditor] = useState(false);
+
   const masterclassSettingsReady =
     Boolean(title.trim() && softwareName.trim()) &&
     targetWordCount >= 100 &&
@@ -92,6 +364,26 @@ export default function Home() {
     if (stored === "true") {
       setIsAuthorized(true);
     }
+    
+    // Load active presets from localStorage
+    const savedSolo = window.localStorage.getItem("activeSoloPresetId");
+    const savedMasterclass = window.localStorage.getItem("activeMasterclassPresetId");
+    if (savedSolo) setActiveSoloPresetId(savedSolo);
+    if (savedMasterclass) setActiveMasterclassPresetId(savedMasterclass);
+
+    // Fetch library
+    fetch("/api/prompts")
+      .then(res => res.json())
+      .then(data => {
+        if (data.presets) setPresets(data.presets);
+        if (data.db && data.db.globalRules !== undefined) {
+          setGlobalRules(data.db.globalRules);
+        }
+        if (data.db && data.db.pronunciationTable) {
+          setPronunciationTable(data.db.pronunciationTable);
+        }
+      })
+      .catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -142,7 +434,7 @@ export default function Home() {
     }
   };
 
-  const handleGenerateScript = async () => {
+  const handleGenerateScript = async (overrideDNA?: ArchitectDNA) => {
     if (!title.trim() || !instructions.trim()) {
       setError("Please fill in both title and instructions");
       return;
@@ -156,17 +448,61 @@ export default function Home() {
     try {
       const minWordCountSingle = targetWordCount - 50;
       const maxWordCountSingle = targetWordCount + 50;
+      const activePreset = presets.find(p => p.id === activeSoloPresetId);
+      const wpm = activePreset?.wpm || 150;
+
+      let dnaToUse = overrideDNA || null;
+
+      // Pass 1: Run Architect (always, unless DNA was already provided)
+      if (!dnaToUse) {
+        setIsRunningArchitect(true);
+        try {
+          const architectRes = await fetch("/api/run-architect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title,
+              instructions,
+              targetWordCount,
+              wpm,
+              itemLabel: "step",
+            }),
+          });
+          if (!architectRes.ok) {
+            const errData = await architectRes.json();
+            throw new Error(errData.error || "Architect analysis failed");
+          }
+          const { dna } = await architectRes.json();
+          dnaToUse = dna;
+          setArchitectDNA(dna);
+          setIsRunningArchitect(false);
+
+          // If "Review Strategy" is checked, pause here for user review
+          if (reviewStrategy) {
+            setShowDNAInspector(true);
+            setDnaCollapsed(false);
+            setIsGeneratingScript(false);
+            return; // User reviews DNA, then clicks "Generate Script with DNA"
+          }
+        } catch (archErr) {
+          setIsRunningArchitect(false);
+          console.error("Architect failed, continuing without DNA:", archErr);
+          // Don't block — continue to Performer without DNA
+        }
+      }
+
+      // Pass 2: Run Performer
       const response = await fetch("/api/generate-script", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
           minWordCount: minWordCountSingle,
           maxWordCount: maxWordCountSingle,
           targetWordCount,
           instructions,
+          presetId: activePreset?.id,
+          ...(dnaToUse ? { architectDNA: dnaToUse } : {}),
         }),
       });
 
@@ -177,6 +513,11 @@ export default function Home() {
 
       const data = await response.json();
       setScript(data.script);
+      // Show DNA inspector collapsed (for debugging) after seamless runs
+      if (dnaToUse) {
+        setShowDNAInspector(true);
+        setDnaCollapsed(true);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -184,7 +525,7 @@ export default function Home() {
     }
   };
 
-  const handleGenerateMasterclassScript = async () => {
+  const handleGenerateMasterclassScript = async (overrideDNA?: ArchitectDNA) => {
     if (!title.trim() || !softwareName.trim()) {
       setError("Please fill in title and software name");
       return;
@@ -203,6 +544,52 @@ export default function Home() {
     try {
       const minWordCountMaster = targetWordCount - 50;
       const maxWordCountMaster = targetWordCount + 50;
+      const activePreset = presets.find(p => p.id === activeMasterclassPresetId);
+      const wpm = activePreset?.wpm || 150;
+
+      let dnaToUse = overrideDNA || null;
+
+      // Pass 1: Run Architect (always)
+      if (!dnaToUse) {
+        setIsRunningArchitect(true);
+        const serializedUseCases = useCases
+          .map((u) => `Task: ${u.taskName}\nInstructions:\n${u.instructions}`)
+          .join("\n\n---\n\n");
+        try {
+          const architectRes = await fetch("/api/run-architect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title,
+              instructions: serializedUseCases,
+              targetWordCount,
+              wpm,
+              numberOfItems: useCases.length,
+              itemLabel: "use case",
+            }),
+          });
+          if (!architectRes.ok) {
+            const errData = await architectRes.json();
+            throw new Error(errData.error || "Architect analysis failed");
+          }
+          const { dna } = await architectRes.json();
+          dnaToUse = dna;
+          setArchitectDNA(dna);
+          setIsRunningArchitect(false);
+
+          if (reviewStrategy) {
+            setShowDNAInspector(true);
+            setDnaCollapsed(false);
+            setIsGeneratingScript(false);
+            return;
+          }
+        } catch (archErr) {
+          setIsRunningArchitect(false);
+          console.error("Architect failed, continuing without DNA:", archErr);
+        }
+      }
+
+      // Pass 2: Run Performer
       const response = await fetch("/api/generate-script-masterclass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -213,6 +600,8 @@ export default function Home() {
           maxWordCount: maxWordCountMaster,
           targetWordCount,
           useCases,
+          presetId: activePreset?.id,
+          ...(dnaToUse ? { architectDNA: dnaToUse } : {}),
         }),
       });
 
@@ -223,6 +612,10 @@ export default function Home() {
 
       const data = await response.json();
       setScript(data.script);
+      if (dnaToUse) {
+        setShowDNAInspector(true);
+        setDnaCollapsed(true);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -330,6 +723,139 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setIsGeneratingChapters(false);
+    }
+  };
+
+  /** Parse raw text into a deduplicated, capped array of Drive IDs. */
+  const parseIds = (raw: string): string[] => {
+    const ids = raw
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return [...new Set(ids)].slice(0, 20);
+  };
+
+  const handleGenerateMultiId = async () => {
+    const ids = parseIds(multiIdInput);
+    if (ids.length === 0) {
+      setError("Please paste at least one Google Drive file ID.");
+      return;
+    }
+
+    setIsGeneratingBatch(true);
+    setError(null);
+    setChapters("");
+    setBatchProgress("Fetching file metadata...");
+    setBatchFiles([]);
+    setBatchComplete(false);
+    batchAbortRef.current = false;
+
+    try {
+      // ── Preflight: resolve Drive filenames and sort A→Z (Golden Rule) ──
+      const metaResponse = await fetch("/api/drive-files-metadata", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileIds: ids }),
+      });
+
+      if (!metaResponse.ok) {
+        const errorData = await metaResponse.json();
+        throw new Error(errorData.error || "Failed to fetch file metadata");
+      }
+
+      const metaData = await metaResponse.json();
+      const resolvedFiles: BatchFile[] = (metaData.files || []).map((f: any) => ({
+        id: f.id,
+        name: f.name ?? f.id, // fallback to raw ID if name unavailable
+        status: f.error ? "error" as const : "pending" as const,
+        error: f.error,
+        errorCategory: f.errorCategory,
+      }));
+
+      if (resolvedFiles.length === 0) {
+        throw new Error("No files could be resolved from the provided IDs.");
+      }
+
+      setBatchFiles(resolvedFiles);
+      setBatchProgress(`Found ${resolvedFiles.length} file(s). Processing...`);
+
+      let aggregatedChapters = "";
+
+      // ── Sequential processing loop (reuses same engine as folder batch) ──
+      for (let i = 0; i < resolvedFiles.length; i++) {
+        if (batchAbortRef.current) {
+          setBatchProgress(`Batch stopped by user at Video ${i} of ${resolvedFiles.length}`);
+          break;
+        }
+
+        const file = resolvedFiles[i];
+
+        // Skip files that already failed in the preflight (invalid IDs)
+        if (file.status === "error") {
+          continue;
+        }
+
+        setBatchFiles((prev) =>
+          prev.map((f, idx) => idx === i ? { ...f, status: "processing" } : f)
+        );
+        setBatchProgress(`Processing Video ${i + 1} of ${resolvedFiles.length}: ${file.name}`);
+
+        try {
+          const response = await fetch("/api/generate-chapters", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              driveFileId: file.id,
+              videoTitle: file.name.replace(/\.[^/.]+$/, ""),
+            }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            const errorCategory = errorData.errorCategory || "UNKNOWN";
+            throw Object.assign(
+              new Error(errorData.error || "Failed to generate chapters"),
+              { errorCategory }
+            );
+          }
+
+          const data = await response.json();
+          const newChapters = data.chapters;
+
+          const block = `# ${data.title || file.name}\n${newChapters}\n\n`;
+          aggregatedChapters += block;
+          setChapters(aggregatedChapters);
+
+          setBatchFiles((prev) =>
+            prev.map((f, idx) => idx === i ? {
+              ...f,
+              status: "success",
+              chapters: newChapters,
+              title: data.title,
+              thumbnailText: data.thumbnailText,
+              tags: data.tags,
+              description: data.description,
+              sheetsStatus: "pending",
+            } : f)
+          );
+        } catch (err: any) {
+          const errorMessage = err instanceof Error ? err.message : "Unknown error";
+          const errorCategory = err?.errorCategory || "UNKNOWN";
+          setBatchFiles((prev) =>
+            prev.map((f, idx) => idx === i ? { ...f, status: "error", error: errorMessage, errorCategory } : f)
+          );
+        }
+      }
+
+      if (!batchAbortRef.current) {
+        setBatchProgress("Batch processing complete!");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+      setBatchProgress("Batch failed.");
+    } finally {
+      setIsGeneratingBatch(false);
+      setBatchComplete(true);
     }
   };
 
@@ -467,6 +993,97 @@ export default function Home() {
     const header = `Batch Error Log — ${failures.length} failure(s)\n${"=".repeat(40)}\n\n`;
     navigator.clipboard.writeText(header + log);
   };
+
+  const handleSavePrompt = async (asNew: boolean, forceSave = false) => {
+    if (!editingPreset) return;
+    setIsSavingPrompt(true);
+    setPromptSaveError(null);
+
+    const presetToSave = {
+      ...editingPreset,
+      id: asNew ? "" : editingPreset.id,
+      name: asNew ? `${editingPreset.name} (Copy)` : editingPreset.name,
+    };
+
+    const payload = {
+      action: "savePreset",
+      preset: presetToSave
+    };
+
+    try {
+      const res = await fetch("/api/prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to save prompt");
+      }
+
+      setPresets(data.presets);
+      
+      const newActiveId = data.savedId;
+      if (promptEditorMode === "solo") {
+        setActiveSoloPresetId(newActiveId);
+        window.localStorage.setItem("activeSoloPresetId", newActiveId);
+      } else {
+        setActiveMasterclassPresetId(newActiveId);
+        window.localStorage.setItem("activeMasterclassPresetId", newActiveId);
+      }
+
+      setEditingPreset(null);
+      // Removed setShowPromptSettings(false) since we are inline now
+    } catch (err: any) {
+      setPromptSaveError(err.message);
+    } finally {
+      setIsSavingPrompt(false);
+    }
+  };
+
+  const handleResetPrompts = async () => {
+    if (!confirm("Are you sure? This will delete ALL custom presets and reset to the factory defaults. This cannot be undone.")) return;
+    try {
+      const res = await fetch("/api/prompts", { method: "DELETE" });
+      const data = await res.json();
+      setPresets(data.presets);
+      
+      const defaultSolo = data.presets.find((p: PromptPreset) => p.isDefault && p.type === "solo");
+      const defaultMaster = data.presets.find((p: PromptPreset) => p.isDefault && p.type === "masterclass");
+      
+      if (defaultSolo) {
+        setActiveSoloPresetId(defaultSolo.id);
+        window.localStorage.setItem("activeSoloPresetId", defaultSolo.id);
+      }
+      if (defaultMaster) {
+        setActiveMasterclassPresetId(defaultMaster.id);
+        window.localStorage.setItem("activeMasterclassPresetId", defaultMaster.id);
+      }
+      setEditingPreset(null);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to reset prompts");
+    }
+  };
+
+  const handleSelectPreset = (id: string) => {
+    if (promptEditorMode === "solo") {
+      setActiveSoloPresetId(id);
+      window.localStorage.setItem("activeSoloPresetId", id);
+    } else {
+      setActiveMasterclassPresetId(id);
+      window.localStorage.setItem("activeMasterclassPresetId", id);
+    }
+  };
+
+  useEffect(() => {
+    if (showPromptSettings) {
+      setEditingPreset(null);
+      setPromptSaveError(null);
+    }
+  }, [showPromptSettings]);
 
   const handleCommitToSheets = async () => {
     if (!spreadsheetId.trim()) {
@@ -659,6 +1276,14 @@ export default function Home() {
               <Video className="w-3.5 h-3.5" />
               Chapters
             </button>
+            <button
+              type="button"
+              onClick={() => setShowPromptSettings(true)}
+              className="px-3 py-2 text-sm font-medium rounded-[6px] border border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626] transition-colors flex items-center gap-1.5 ml-2"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Prompts
+            </button>
           </div>
           <button
             type="button"
@@ -732,13 +1357,72 @@ export default function Home() {
                   />
                 </div>
 
+                <div className="pt-3 border-t border-[#262626] mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={labelClass} style={{ marginBottom: 0 }}>System Prompt Preset</label>
+                    <button 
+                      type="button"
+                      onClick={() => { 
+                        if (editingPreset && promptEditorMode === "solo") {
+                          setEditingPreset(null);
+                        } else {
+                          setPromptEditorMode("solo"); 
+                          setEditingPreset(presets.find(p => p.id === activeSoloPresetId) || presets.find(p => p.type === "solo" && p.isDefault) || null); 
+                        }
+                      }}
+                      className="text-[11px] font-medium text-[#8a8a8b] hover:text-[#e2e2e2] transition-colors"
+                    >
+                      {editingPreset && promptEditorMode === "solo" ? "Close Editor" : "Edit / Clone"}
+                    </button>
+                  </div>
+                  
+                  {editingPreset && promptEditorMode === "solo" ? (
+                    <PresetEditor 
+                      preset={editingPreset}
+                      globalRules={globalRules}
+                      onChange={setEditingPreset}
+                      onSave={handleSavePrompt}
+                      onSaveGlobalRules={(val) => {
+                        setGlobalRules(val);
+                        // Auto-save global rules
+                        fetch("/api/prompts", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ action: "saveGlobalRules", globalRules: val }),
+                        }).catch(console.error);
+                      }}
+                      isSaving={isSavingPrompt}
+                      error={promptSaveError}
+                    />
+                  ) : (
+                    <select
+                      value={activeSoloPresetId || ""}
+                      onChange={(e) => {
+                        setPromptEditorMode("solo");
+                        handleSelectPreset(e.target.value);
+                      }}
+                      className={inputBase}
+                      disabled={isGeneratingScript || isGeneratingAudio}
+                    >
+                      {presets.filter(p => p.type === "solo").map(p => (
+                        <option key={p.id} value={p.id}>{p.name} {p.isDefault ? "(Factory Default)" : ""}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-2 pt-1">
                   <button
-                    onClick={handleGenerateScript}
-                    disabled={isGeneratingScript || isGeneratingAudio}
+                    onClick={() => handleGenerateScript()}
+                    disabled={isGeneratingScript || isGeneratingAudio || isRunningArchitect}
                     className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2"
                   >
-                    {isGeneratingScript ? (
+                    {isRunningArchitect ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : isGeneratingScript ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
                         Writing script...
@@ -750,10 +1434,121 @@ export default function Home() {
                       </>
                     )}
                   </button>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Pause after AI analysis to review and edit the script strategy before generating">
+                    <input
+                      type="checkbox"
+                      checked={reviewStrategy}
+                      onChange={(e) => setReviewStrategy(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded border-[#3a3a3a] bg-[#161618] text-amber-500 focus:ring-amber-500/50 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-[#8a8a8b]">Review Strategy</span>
+                  </label>
                   <span className="text-[11px] uppercase tracking-wider text-[#8a8a8b] px-2 py-1 rounded-[6px] border border-[#262626] bg-[#161618]">
                     ⌘ + Enter
                   </span>
                 </div>
+
+                {/* DNA Inspector Panel */}
+                {showDNAInspector && architectDNA && mode === "single" && (
+                  <div className="mt-3 border border-amber-500/30 rounded-[6px] bg-amber-500/5 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setDnaCollapsed(!dnaCollapsed)}
+                      className="w-full flex items-center justify-between px-3 py-2 hover:bg-amber-500/10 transition-colors"
+                    >
+                      <h3 className="text-xs font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                        ⚡ Script DNA {dnaCollapsed ? "(click to expand)" : "— Review & Edit"}
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#8a8a8b]">
+                          {architectDNA.hookStyle} · {architectDNA.timingMap.steps.length} steps
+                        </span>
+                        <X
+                          className="w-3.5 h-3.5 text-[#8a8a8b] hover:text-[#e2e2e2]"
+                          onClick={(e) => { e.stopPropagation(); setShowDNAInspector(false); setArchitectDNA(null); }}
+                        />
+                      </div>
+                    </button>
+
+                    {!dnaCollapsed && (
+                      <div className="p-3 pt-0 space-y-3">
+                        <div className="grid grid-cols-1 gap-2">
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Pain Point</label>
+                            <input type="text" value={architectDNA.painPoint} onChange={(e) => setArchitectDNA({...architectDNA, painPoint: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs" />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Authority Anchor</label>
+                            <input type="text" value={architectDNA.authorityAnchor} onChange={(e) => setArchitectDNA({...architectDNA, authorityAnchor: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs" />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Core Transformation</label>
+                            <input type="text" value={architectDNA.coreTransformation} onChange={(e) => setArchitectDNA({...architectDNA, coreTransformation: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Hook Style</label>
+                              <select value={architectDNA.hookStyle} onChange={(e) => setArchitectDNA({...architectDNA, hookStyle: e.target.value as ArchitectDNA["hookStyle"]})} className="ink-input w-full px-2 py-1.5 text-xs">
+                                <option value="result-led">Result-led (Proof first)</option>
+                                <option value="experience-led">Experience-led (Authority first)</option>
+                                <option value="problem-led">Problem-led (Pain first)</option>
+                              </select>
+                            </div>
+                            <div className="flex items-end">
+                              <div className="text-[10px] text-[#8a8a8b]">
+                                Hook: {architectDNA.timingMap.hookSeconds}s · Bridge: {architectDNA.timingMap.bridgeSeconds}s · Close: {architectDNA.timingMap.closingSeconds}s
+                              </div>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Hook Draft</label>
+                            <textarea value={architectDNA.hookDraft} onChange={(e) => setArchitectDNA({...architectDNA, hookDraft: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs min-h-[50px] resize-y" />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Bridge Draft</label>
+                            <textarea value={architectDNA.bridgeDraft} onChange={(e) => setArchitectDNA({...architectDNA, bridgeDraft: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs min-h-[40px] resize-y" />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] uppercase text-[#8a8a8b] mb-1 block">Step Timing Allocation</label>
+                          <div className="space-y-1">
+                            {architectDNA.timingMap.steps.map((step, i) => (
+                              <div key={i} className="flex items-center gap-2 text-[11px] text-[#c0c0c0] bg-[#0c0c0d] px-2 py-1 rounded">
+                                <span className="text-[#8a8a8b] w-4 text-right">{i + 1}.</span>
+                                <span className="flex-1 truncate">{step.name}</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-semibold ${
+                                  step.complexity === "complex" ? "bg-red-500/10 text-red-400" :
+                                  step.complexity === "moderate" ? "bg-amber-500/10 text-amber-400" :
+                                  "bg-green-500/10 text-green-400"
+                                }`}>{step.complexity}</span>
+                                <span className="text-[#8a8a8b] w-10 text-right">{step.allocatedSeconds}s</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleGenerateScript(architectDNA)}
+                          disabled={isGeneratingScript}
+                          className="ink-btn-primary w-full px-4 py-2 text-sm font-medium flex items-center justify-center gap-2"
+                        >
+                          {isGeneratingScript ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Writing with DNA...
+                            </>
+                          ) : (
+                            <>
+                              <FileText className="w-4 h-4" />
+                              Regenerate Script with DNA
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1024,13 +1819,72 @@ export default function Home() {
                 ))}
               </div>
 
+              <div className="pt-4 border-t border-[#262626] mt-5">
+                <div className="flex items-center justify-between mb-2">
+                  <label className={labelClass} style={{ marginBottom: 0 }}>System Prompt Preset</label>
+                  <button 
+                    type="button"
+                    onClick={() => { 
+                      if (editingPreset && promptEditorMode === "masterclass") {
+                        setEditingPreset(null);
+                      } else {
+                        setPromptEditorMode("masterclass"); 
+                        setEditingPreset(presets.find(p => p.id === activeMasterclassPresetId) || presets.find(p => p.type === "masterclass" && p.isDefault) || null); 
+                      }
+                    }}
+                    className="text-[11px] font-medium text-[#8a8a8b] hover:text-[#e2e2e2] transition-colors"
+                  >
+                    {editingPreset && promptEditorMode === "masterclass" ? "Close Editor" : "Edit / Clone"}
+                  </button>
+                </div>
+                
+                {editingPreset && promptEditorMode === "masterclass" ? (
+                  <PresetEditor 
+                    preset={editingPreset}
+                    globalRules={globalRules}
+                    onChange={setEditingPreset}
+                    onSave={handleSavePrompt}
+                    onSaveGlobalRules={(val) => {
+                      setGlobalRules(val);
+                      // Auto-save global rules
+                      fetch("/api/prompts", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "saveGlobalRules", globalRules: val }),
+                      }).catch(console.error);
+                    }}
+                    isSaving={isSavingPrompt}
+                    error={promptSaveError}
+                  />
+                ) : (
+                  <select
+                    value={activeMasterclassPresetId || ""}
+                    onChange={(e) => {
+                      setPromptEditorMode("masterclass");
+                      handleSelectPreset(e.target.value);
+                    }}
+                    className={inputBase}
+                    disabled={isGeneratingScript || isGeneratingAudio}
+                  >
+                    {presets.filter(p => p.type === "masterclass").map(p => (
+                      <option key={p.id} value={p.id}>{p.name} {p.isDefault ? "(Factory Default)" : ""}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
               <div className="flex items-center gap-2 mt-4 pt-3 border-t border-[#262626]">
                 <button
-                  onClick={handleGenerateMasterclassScript}
-                  disabled={isGeneratingScript || isGeneratingAudio}
+                  onClick={() => handleGenerateMasterclassScript()}
+                  disabled={isGeneratingScript || isGeneratingAudio || isRunningArchitect}
                   className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2"
                 >
-                  {isGeneratingScript ? (
+                  {isRunningArchitect ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : isGeneratingScript ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
                       Writing script...
@@ -1042,10 +1896,115 @@ export default function Home() {
                     </>
                   )}
                 </button>
+                <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Pause after AI analysis to review and edit the script strategy before generating">
+                  <input
+                    type="checkbox"
+                    checked={reviewStrategy}
+                    onChange={(e) => setReviewStrategy(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-[#3a3a3a] bg-[#161618] text-amber-500 focus:ring-amber-500/50 cursor-pointer"
+                  />
+                  <span className="text-[11px] text-[#8a8a8b]">Review Strategy</span>
+                </label>
                 <span className="text-[11px] uppercase tracking-wider text-[#8a8a8b] px-2 py-1 rounded-[6px] border border-[#262626] bg-[#161618]">
                   ⌘ + Enter
                 </span>
               </div>
+
+              {/* DNA Inspector Panel — Masterclass */}
+              {showDNAInspector && architectDNA && mode === "masterclass" && (
+                <div className="mt-3 border border-amber-500/30 rounded-[6px] bg-amber-500/5 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setDnaCollapsed(!dnaCollapsed)}
+                    className="w-full flex items-center justify-between px-3 py-2 hover:bg-amber-500/10 transition-colors"
+                  >
+                    <h3 className="text-xs font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                      ⚡ Script DNA {dnaCollapsed ? "(click to expand)" : "— Review & Edit"}
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-[#8a8a8b]">
+                        {architectDNA.hookStyle} · {architectDNA.timingMap.steps.length} use cases
+                      </span>
+                      <X
+                        className="w-3.5 h-3.5 text-[#8a8a8b] hover:text-[#e2e2e2]"
+                        onClick={(e) => { e.stopPropagation(); setShowDNAInspector(false); setArchitectDNA(null); }}
+                      />
+                    </div>
+                  </button>
+
+                  {!dnaCollapsed && (
+                    <div className="p-3 pt-0 space-y-3">
+                      <div className="grid grid-cols-1 gap-2">
+                        <div>
+                          <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Pain Point</label>
+                          <input type="text" value={architectDNA.painPoint} onChange={(e) => setArchitectDNA({...architectDNA, painPoint: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Authority Anchor</label>
+                          <input type="text" value={architectDNA.authorityAnchor} onChange={(e) => setArchitectDNA({...architectDNA, authorityAnchor: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Hook Style</label>
+                            <select value={architectDNA.hookStyle} onChange={(e) => setArchitectDNA({...architectDNA, hookStyle: e.target.value as ArchitectDNA["hookStyle"]})} className="ink-input w-full px-2 py-1.5 text-xs">
+                              <option value="result-led">Result-led (Proof first)</option>
+                              <option value="experience-led">Experience-led (Authority first)</option>
+                              <option value="problem-led">Problem-led (Pain first)</option>
+                            </select>
+                          </div>
+                          <div className="flex items-end">
+                            <div className="text-[10px] text-[#8a8a8b]">
+                              Hook: {architectDNA.timingMap.hookSeconds}s · Bridge: {architectDNA.timingMap.bridgeSeconds}s
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Hook Draft</label>
+                          <textarea value={architectDNA.hookDraft} onChange={(e) => setArchitectDNA({...architectDNA, hookDraft: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs min-h-[50px] resize-y" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase text-[#8a8a8b] mb-0.5 block">Bridge Draft</label>
+                          <textarea value={architectDNA.bridgeDraft} onChange={(e) => setArchitectDNA({...architectDNA, bridgeDraft: e.target.value})} className="ink-input w-full px-2 py-1.5 text-xs min-h-[40px] resize-y" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase text-[#8a8a8b] mb-1 block">Use Case Timing</label>
+                        <div className="space-y-1">
+                          {architectDNA.timingMap.steps.map((step, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[11px] text-[#c0c0c0] bg-[#0c0c0d] px-2 py-1 rounded">
+                              <span className="text-[#8a8a8b] w-4 text-right">{i + 1}.</span>
+                              <span className="flex-1 truncate">{step.name}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-semibold ${
+                                step.complexity === "complex" ? "bg-red-500/10 text-red-400" :
+                                step.complexity === "moderate" ? "bg-amber-500/10 text-amber-400" :
+                                "bg-green-500/10 text-green-400"
+                              }`}>{step.complexity}</span>
+                              <span className="text-[#8a8a8b] w-10 text-right">{step.allocatedSeconds}s</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleGenerateMasterclassScript(architectDNA)}
+                        disabled={isGeneratingScript}
+                        className="ink-btn-primary w-full px-4 py-2 text-sm font-medium flex items-center justify-center gap-2"
+                      >
+                        {isGeneratingScript ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Writing with DNA...
+                          </>
+                        ) : (
+                          <>
+                            <FileText className="w-4 h-4" />
+                            Regenerate Script with DNA
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Row 3 - The Output */}
@@ -1159,7 +2118,23 @@ export default function Home() {
                     : "text-[#8a8a8b] hover:text-[#e2e2e2]"
                 }`}
               >
-                Drive Folder (Batch)
+                Drive Folder
+              </button>
+              <button
+                onClick={() => {
+                  setChapterMode("multi-id");
+                  // Auto-fill tab name: use softwareName if available, else hint placeholder
+                  if (!sheetsTabName.trim()) {
+                    setSheetsTabName(softwareName.trim() || "");
+                  }
+                }}
+                className={`px-4 py-1.5 text-sm font-medium rounded-[6px] transition-colors ${
+                  chapterMode === "multi-id"
+                    ? "bg-[#262626] text-[#e2e2e2]"
+                    : "text-[#8a8a8b] hover:text-[#e2e2e2]"
+                }`}
+              >
+                Batch IDs
               </button>
             </div>
 
@@ -1227,7 +2202,7 @@ export default function Home() {
                       </button>
                     </div>
                   </>
-                ) : (
+                ) : chapterMode === "batch" ? (
                   <>
                     <div>
                       <label htmlFor="driveFolderId" className={labelClass}>
@@ -1276,6 +2251,84 @@ export default function Home() {
                       )}
                     </div>
                   </>
+                ) : (
+                  /* ── Multi-ID Batch Mode ── */
+                  <>
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label htmlFor="multiIdInput" className={labelClass + " mb-0"}>
+                          Google Drive File IDs
+                        </label>
+                        {multiIdInput.trim() && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMultiIdInput("");
+                              setBatchFiles([]);
+                              setBatchComplete(false);
+                              setBatchProgress("");
+                              setChapters("");
+                            }}
+                            disabled={isGeneratingBatch}
+                            className="text-[11px] uppercase tracking-wider text-red-400 hover:text-red-300 disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <X className="w-3 h-3" />
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        id="multiIdInput"
+                        value={multiIdInput}
+                        onChange={(e) => setMultiIdInput(e.target.value)}
+                        placeholder={`Paste up to 20 Google Drive file IDs\nSeparate by comma or new line\n\ne.g.\n1aBcDeFgHiJkLmNoPqRsT\n2xYzAbCdEfGhIjKlMnOp`}
+                        rows={7}
+                        className={`${inputBase} font-mono resize-none`}
+                        disabled={isGeneratingBatch}
+                      />
+                      <div className="mt-1 flex items-center justify-between">
+                        <p className="text-[11px] uppercase tracking-wider text-[#8a8a8b]">
+                          From: drive.google.com/file/d/<strong>THIS_PART</strong>/view
+                        </p>
+                        {multiIdInput.trim() && (
+                          <span className={`text-[11px] uppercase tracking-wider font-medium ${
+                            parseIds(multiIdInput).length >= 20 ? "text-amber-400" : "text-[#8a8a8b]"
+                          }`}>
+                            {parseIds(multiIdInput).length}/20 IDs
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={handleGenerateMultiId}
+                        disabled={isGeneratingBatch || !multiIdInput.trim() || isGeneratingChapters}
+                        className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-violet-600 hover:bg-violet-500 border-violet-500"
+                      >
+                        {isGeneratingBatch ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Processing IDs...
+                          </>
+                        ) : (
+                          <>
+                            <Layers className="w-4 h-4" />
+                            Process {parseIds(multiIdInput).length > 0 ? `${parseIds(multiIdInput).length} ID${parseIds(multiIdInput).length !== 1 ? "s" : ""}` : "IDs"}
+                          </>
+                        )}
+                      </button>
+                      {isGeneratingBatch && (
+                        <button
+                          onClick={handleStopBatch}
+                          className="px-3 py-2 text-sm font-medium rounded-[6px] border border-red-900/50 bg-red-950/20 text-red-400 hover:bg-red-950/40 flex items-center gap-1.5"
+                        >
+                          <Square className="w-3.5 h-3.5" />
+                          Stop
+                        </button>
+                      )}
+                    </div>
+                  </>
                 )}
 
                 {/* Progress Indicators */}
@@ -1288,7 +2341,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {(isGeneratingBatch || batchFiles.length > 0) && chapterMode === "batch" && (
+                {(isGeneratingBatch || batchFiles.length > 0) && (chapterMode === "batch" || chapterMode === "multi-id") && (
                   <div className="p-3 rounded-[6px] border border-[#262626] bg-[#161618] space-y-3">
                     <div className="text-[11px] uppercase tracking-wider text-[#e2e2e2] flex items-center gap-2 font-semibold">
                       <Layers className="w-3.5 h-3.5 text-[#8a8a8b]" />

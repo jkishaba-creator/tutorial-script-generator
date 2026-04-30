@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { getPromptsDB } from "@/lib/prompts-db";
 
 /** Create a WAV file buffer from raw PCM (16-bit, mono). Gemini TTS returns PCM at 24kHz. */
 function pcmToWav(pcm: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16): Buffer {
@@ -55,6 +56,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Apply Pronunciation Table
+    const db = getPromptsDB();
+    // Strip asterisks to prevent TTS from reading them out loud
+    let processedText = text.replace(/\*/g, '');
+    if (db.pronunciationTable && db.pronunciationTable.length > 0) {
+      for (const entry of db.pronunciationTable) {
+        if (!entry.original || !entry.phonetic) continue;
+        const flags = entry.caseSensitive ? "g" : "gi";
+        const escapedOriginal = entry.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const startsWithWordChar = /^\w/.test(entry.original);
+        const endsWithWordChar = /\w$/.test(entry.original);
+        const prefix = startsWithWordChar ? "\\b" : "";
+        const suffix = endsWithWordChar ? "\\b" : "";
+        const regex = new RegExp(`${prefix}${escapedOriginal}${suffix}`, flags);
+        processedText = processedText.replace(regex, entry.phonetic);
+      }
+    }
+
+    // Apply Pause Tokens (provider-specific syntax)
+    if (db.pauseTokens) {
+      for (const [token, providers] of Object.entries(db.pauseTokens)) {
+        const replacement = providers[provider] || "";
+        processedText = processedText.replace(
+          new RegExp(`\\{\\{${token}\\}\\}`, "g"),
+          replacement
+        );
+      }
+    }
+
     // Handle ElevenLabs
     if (provider === "elevenlabs") {
       const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -78,7 +108,7 @@ export async function POST(request: NextRequest) {
             "xi-api-key": apiKey,
           },
           body: JSON.stringify({
-            text: text,
+            text: processedText,
             model_id: "eleven_flash_v2_5",
             voice_settings: {
               stability: 0.5,
@@ -122,7 +152,7 @@ export async function POST(request: NextRequest) {
       const referenceId = process.env.FISH_AUDIO_REFERENCE_ID || undefined;
 
       const body: { text: string; format: string; reference_id?: string } = {
-        text,
+        text: processedText,
         format: "mp3",
       };
       if (referenceId) body.reference_id = referenceId;
@@ -195,7 +225,7 @@ export async function POST(request: NextRequest) {
           
           // Generate audio for the full script in one request
           const result = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: text }] }],
+            contents: [{ role: "user", parts: [{ text: processedText }] }],
             generationConfig: makeTtsConfig() as any,
           });
           const response = await result.response;
