@@ -933,6 +933,8 @@ export default function Home() {
       setIsGeneratingBatch(false);
       setBatchComplete(true);
     }
+  };
+
   const handleForceExportToSheets = async (folder: any) => {
     try {
       const exportFiles = (folder.videoResults || [])
