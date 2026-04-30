@@ -1,20 +1,24 @@
 /**
  * GET /api/process-batch/progress?batchId=<id>
  *
- * Server-Sent Events (SSE) endpoint for live batch progress streaming.
+ * Simple JSON polling endpoint for batch progress.
+ * Replaces the previous SSE (Server-Sent Events) approach, which doesn't work
+ * reliably on Vercel serverless functions due to the 10-60s connection timeout.
  *
- * Sends a JSON event every second with the full batch progress state,
- * including per-video status and FFmpeg render percentages.
+ * The frontend polls this every 4 seconds. Each call reads from Vercel KV.
+ * At ~15 req/min per VA browser tab, we stay well within KV rate limits.
  *
- * Example event:
- *   data: {"jobs":[{"jobId":"...","videoName":"tutorial.mp4","status":"processing","renderPercent":45,"batchPosition":"12/80"}],"summary":{"total":80,"done":11,"processing":1,"queued":68,"errors":0,"skipped":0}}
- *
- * The stream closes automatically when all jobs are done/error/skipped,
- * or after 30 minutes (safety timeout).
+ * Response:
+ * {
+ *   jobs: JobProgress[],
+ *   summary: { total, done, processing, queued, errors, skipped },
+ *   activeJob: "Rendering Video 3/80 - 45%",
+ *   isComplete: boolean
+ * }
  */
 
-import { NextRequest } from "next/server";
-import { jobQueueDB } from "@/lib/job-queue-db";
+import { NextRequest, NextResponse } from "next/server";
+import { kvQueue } from "@/lib/job-queue-kv";
 
 export const dynamic = "force-dynamic";
 
@@ -22,110 +26,77 @@ export async function GET(request: NextRequest) {
   const batchId = request.nextUrl.searchParams.get("batchId");
 
   if (!batchId) {
-    return new Response(JSON.stringify({ error: "Missing batchId parameter" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return NextResponse.json({ error: "Missing batchId parameter" }, { status: 400 });
   }
 
-  const encoder = new TextEncoder();
-  const POLL_INTERVAL_MS = 1000;
-  const MAX_DURATION_MS = 30 * 60 * 1000; // 30 minutes safety timeout
+  try {
+    const dbJobs = await kvQueue.getBatchJobs(batchId);
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const startTime = Date.now();
-
-      const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
-
-      const interval = setInterval(() => {
-        try {
-          // Safety timeout
-          if (Date.now() - startTime > MAX_DURATION_MS) {
-            send({ event: "timeout", message: "Progress stream timed out after 30 minutes" });
-            clearInterval(interval);
-            controller.close();
-            return;
-          }
-
-          const dbJobs = jobQueueDB.getJobsByBatch(batchId);
-
-          if (!dbJobs || dbJobs.length === 0) {
-            send({ event: "not_found", message: "Batch not found or already cleaned up" });
-            clearInterval(interval);
-            controller.close();
-            return;
-          }
-
-          // Map DB jobs to the frontend's expected JobProgress interface
-          const jobs = dbJobs.map((j, i) => ({
-            jobId: j.id,
-            videoName: j.videoName,
-            status: j.status === "pending" ? "queued" : j.status,
-            renderPercent: j.renderPercent,
-            error: j.errorMessage || undefined,
-            batchPosition: `${i + 1}/${dbJobs.length}`
-          }));
-
-          // Build summary
-          const summary = {
-            total: jobs.length,
-            done: jobs.filter((j) => j.status === "done").length,
-            processing: jobs.filter((j) => j.status === "processing").length,
-            downloading: jobs.filter((j) => j.status === "downloading").length,
-            uploading: jobs.filter((j) => j.status === "uploading").length,
-            queued: jobs.filter((j) => j.status === "queued").length,
-            errors: jobs.filter((j) => j.status === "error").length,
-            skipped: jobs.filter((j) => j.status === "skipped").length,
-          };
-
-          // Find the currently active job for a headline
-          const activeJob = jobs.find(
-            (j) => j.status === "processing" || j.status === "downloading" || j.status === "uploading"
-          );
-
-          send({
-            event: "progress",
-            jobs,
-            summary,
-            activeJob: activeJob
-              ? `Rendering Video ${activeJob.batchPosition} - ${activeJob.renderPercent}%`
-              : summary.queued > 0
-              ? "Waiting in queue..."
-              : "Batch complete",
-          });
-
-          // Auto-close when everything is terminal
-          const allTerminal = jobs.every(
-            (j) => j.status === "done" || j.status === "error" || j.status === "skipped"
-          );
-          if (allTerminal) {
-            send({ event: "complete", message: "All jobs finished", summary });
-            clearInterval(interval);
-            controller.close();
-          }
-        } catch (err) {
-          console.error("SSE progress error:", err);
-          clearInterval(interval);
-          controller.close();
-        }
-      }, POLL_INTERVAL_MS);
-
-      // Handle client disconnect
-      request.signal.addEventListener("abort", () => {
-        clearInterval(interval);
-        controller.close();
+    if (!dbJobs || dbJobs.length === 0) {
+      return NextResponse.json({
+        found: false,
+        message: "Batch not found. It may still be queuing (iMac is crawling Drive), or it may have been pruned.",
+        jobs: [],
+        summary: { total: 0, done: 0, processing: 0, queued: 0, errors: 0, skipped: 0 },
+        isComplete: false,
       });
-    },
-  });
+    }
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  });
+    // Map to frontend-friendly format
+    const jobs = dbJobs.map((j, i) => ({
+      jobId: j.id,
+      videoName: j.videoName,
+      status: j.status === "pending" ? "queued" : j.status,
+      renderPercent: j.renderPercent,
+      error: j.errorMessage || undefined,
+      skipReason: j.skipReason || undefined,
+      batchPosition: `${i + 1}/${dbJobs.length}`,
+      startedAt: j.startedAt,
+      completedAt: j.completedAt,
+    }));
+
+    const summary = {
+      total: jobs.length,
+      done: jobs.filter((j) => j.status === "done").length,
+      processing: jobs.filter((j) => j.status === "processing" || j.status === "downloading" || j.status === "uploading").length,
+      queued: jobs.filter((j) => j.status === "queued").length,
+      errors: jobs.filter((j) => j.status === "error").length,
+      skipped: jobs.filter((j) => j.status === "skipped").length,
+    };
+
+    const activeJob = jobs.find(
+      (j) => j.status === "processing" || j.status === "downloading" || j.status === "uploading"
+    );
+
+    const isComplete = jobs.every(
+      (j) => j.status === "done" || j.status === "error" || j.status === "skipped"
+    );
+
+    let statusLine: string;
+    if (activeJob) {
+      const action =
+        activeJob.status === "downloading" ? "⬇️ Downloading" :
+        activeJob.status === "uploading" ? "⬆️ Uploading" :
+        `🎬 Rendering ${activeJob.renderPercent}%`;
+      statusLine = `${action} — Video ${activeJob.batchPosition}`;
+    } else if (summary.queued > 0) {
+      statusLine = `⏳ ${summary.queued} video(s) waiting in queue...`;
+    } else if (isComplete) {
+      statusLine = `✅ Batch complete — ${summary.done} processed, ${summary.errors} errors`;
+    } else {
+      statusLine = "📡 Waiting for iMac to pick up jobs...";
+    }
+
+    return NextResponse.json({
+      found: true,
+      jobs,
+      summary,
+      statusLine,
+      isComplete,
+    });
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link, History } from "lucide-react";
 
-type Mode = "single" | "masterclass" | "chapters";
+type Mode = "single" | "masterclass" | "chapters" | "factory";
 type ChapterBatchMode = "single" | "batch" | "multi-id";
 type UseCaseEntry = { taskName: string; instructions: string };
 
@@ -352,6 +352,22 @@ export default function Home() {
   const [pronunciationTable, setPronunciationTable] = useState<PronunciationEntry[]>([]);
   const [showPronunciationEditor, setShowPronunciationEditor] = useState(false);
 
+  // ── Factory Floor state ─────────────────────────────────────────
+  const [macStatus, setMacStatus] = useState<{
+    online: boolean;
+    status: "online" | "idle" | "offline" | "processing";
+    lastSeen: string | null;
+    currentJob: string | null;
+    jobsProcessedToday: number;
+    queueDepth: number;
+    hasPendingCrawl: boolean;
+  } | null>(null);
+  const [isMacStatusLoading, setIsMacStatusLoading] = useState(false);
+  const [factoryBatchProgress, setFactoryBatchProgress] = useState<any | null>(null);
+  const [isTriggering, setIsTriggering] = useState(false);
+  const [factorySpecificDate, setFactorySpecificDate] = useState("");
+  const factoryPollRef = useRef<NodeJS.Timeout | null>(null);
+
   const masterclassSettingsReady =
     Boolean(title.trim() && softwareName.trim()) &&
     targetWordCount >= 100 &&
@@ -386,7 +402,19 @@ export default function Home() {
         }
       })
       .catch(console.error);
+
+    // Poll mac status every 30 seconds
+    const pollMacStatus = () => {
+      fetch("/api/mac-status")
+        .then(res => res.json())
+        .then(data => setMacStatus(data))
+        .catch(() => {});
+    };
+    pollMacStatus();
+    const macStatusInterval = setInterval(pollMacStatus, 30000);
+    return () => clearInterval(macStatusInterval);
   }, []);
+
 
   useEffect(() => {
     if (pinInput.length !== 6) return;
@@ -1311,6 +1339,25 @@ export default function Home() {
             </button>
             <button
               type="button"
+              onClick={() => setMode("factory")}
+              className={`px-3 py-2 text-sm font-medium rounded-[6px] border transition-colors flex items-center gap-1.5 ${
+                mode === "factory"
+                  ? "bg-[#161618] text-[#e2e2e2] border-[#262626]"
+                  : "border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626]"
+              }`}
+            >
+              {/* Factory icon */}
+              <span className="text-[13px] leading-none">🏭</span>
+              Factory Floor
+              {macStatus && (
+                <span className={`w-2 h-2 rounded-full ml-0.5 ${
+                  macStatus.status === "processing" ? "bg-blue-400 animate-pulse" :
+                  macStatus.online ? "bg-emerald-400" : "bg-red-400"
+                }`} />
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowHistoryModal(true)}
               className="px-3 py-2 text-sm font-medium rounded-[6px] border border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626] transition-colors flex items-center gap-1.5 ml-2"
             >
@@ -2128,6 +2175,142 @@ export default function Home() {
                 )}
               </div>
             </div>
+          </div>
+        ) : mode === "factory" ? (
+          /* ─── Factory Floor Mode ─── */
+          <div className="space-y-6">
+            {/* iMac Status Bar */}
+            <div className="p-4 border border-[#262626] rounded-[10px] bg-[#0c0c0d] flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
+                  !macStatus ? "bg-[#444] animate-pulse" :
+                  macStatus.status === "processing" ? "bg-blue-400 animate-pulse" :
+                  macStatus.online ? "bg-emerald-400" : "bg-red-500"
+                }`} />
+                <div>
+                  <div className="text-sm font-semibold text-[#e2e2e2]">
+                    {!macStatus ? "Checking iMac status..." :
+                     macStatus.status === "processing" ? "🎬 iMac is Processing" :
+                     macStatus.online ? "🟢 iMac Online & Idle" : "🔴 iMac Offline"}
+                  </div>
+                  {macStatus && (
+                    <div className="text-xs text-[#8a8a8b] mt-0.5 space-x-3">
+                      {macStatus.lastSeen && <span>Last seen: {macStatus.lastSeen}</span>}
+                      <span>{macStatus.queueDepth} job(s) queued</span>
+                      <span>{macStatus.jobsProcessedToday} processed today</span>
+                      {macStatus.hasPendingCrawl && <span className="text-amber-400">⏳ Crawl pending...</span>}
+                    </div>
+                  )}
+                  {macStatus?.currentJob && (
+                    <div className="text-xs text-blue-400 mt-0.5 font-mono truncate max-w-xs">
+                      {macStatus.currentJob}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsMacStatusLoading(true);
+                  fetch("/api/mac-status")
+                    .then(r => r.json())
+                    .then(data => { setMacStatus(data); setIsMacStatusLoading(false); })
+                    .catch(() => setIsMacStatusLoading(false));
+                }}
+                className="px-3 py-1.5 text-xs rounded-[6px] border border-[#262626] bg-[#161618] text-[#8a8a8b] hover:text-[#e2e2e2] hover:border-[#444] transition-colors flex items-center gap-1.5"
+              >
+                {isMacStatusLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "↻"}
+                Refresh
+              </button>
+            </div>
+
+            {/* Trigger Controls */}
+            <div className="p-5 border border-[#262626] rounded-[10px] bg-[#0c0c0d]">
+              <h2 className="text-sm font-semibold text-[#e2e2e2] mb-4 flex items-center gap-2">
+                <span className="text-base">🚀</span>
+                Queue New Batch
+              </h2>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs uppercase tracking-wider text-[#8a8a8b] mb-1.5 block">
+                    Filter by Date <span className="text-[#444]">(optional — leave blank for full crawl)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={factorySpecificDate}
+                    onChange={(e) => setFactorySpecificDate(e.target.value)}
+                    placeholder="YYYY-MM-DD  e.g. 2025-04-30"
+                    className="w-full px-3 py-2 bg-[#161618] border border-[#262626] rounded-[6px] text-sm text-[#e2e2e2] placeholder-[#444] font-mono focus:outline-none focus:border-[#444]"
+                    disabled={isTriggering}
+                  />
+                </div>
+                <button
+                  onClick={async () => {
+                    setIsTriggering(true);
+                    try {
+                      const body: any = {};
+                      if (factorySpecificDate.trim()) body.specificDate = factorySpecificDate.trim();
+                      const res = await fetch("/api/process-batch", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || "Failed to trigger batch");
+                      // Start polling for queue status after triggering
+                      setFactoryBatchProgress({ statusLine: data.message, isComplete: false, summary: { total: 0, done: 0, queued: data.currentQueueDepth, processing: 0, errors: 0, skipped: 0 } });
+                    } catch (err: any) {
+                      alert("Error: " + err.message);
+                    } finally {
+                      setIsTriggering(false);
+                    }
+                  }}
+                  disabled={isTriggering}
+                  className="w-full px-4 py-2.5 rounded-[8px] bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                >
+                  {isTriggering ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Sending signal to iMac...</>
+                  ) : (
+                    <>{factorySpecificDate.trim() ? `🎯 Process ${factorySpecificDate}` : "🏭 Process Full Drive"}</>
+                  )}
+                </button>
+                <p className="text-[11px] text-[#444] text-center">
+                  The iMac will receive this signal within ~60 seconds, crawl Google Drive, and begin processing.
+                </p>
+              </div>
+            </div>
+
+            {/* Batch Progress */}
+            {factoryBatchProgress ? (
+              <div className="p-5 border border-[#262626] rounded-[10px] bg-[#0c0c0d]">
+                <h3 className="text-sm font-semibold text-[#e2e2e2] mb-3">📡 Queue Status</h3>
+                <div className="text-sm text-[#8a8a8b]">{factoryBatchProgress.statusLine}</div>
+                {factoryBatchProgress.summary && (
+                  <div className="grid grid-cols-3 gap-3 mt-4">
+                    {[
+                      { label: "Queued", value: factoryBatchProgress.summary.queued, color: "text-amber-400" },
+                      { label: "Done", value: factoryBatchProgress.summary.done, color: "text-emerald-400" },
+                      { label: "Errors", value: factoryBatchProgress.summary.errors, color: "text-red-400" },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} className="p-3 bg-[#161618] rounded-[8px] border border-[#262626] text-center">
+                        <div className={`text-2xl font-bold ${color}`}>{value}</div>
+                        <div className="text-xs text-[#8a8a8b] mt-1">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => {
+                    fetch("/api/mac-status")
+                      .then(r => r.json())
+                      .then(data => setMacStatus(data))
+                      .catch(() => {});
+                  }}
+                  className="mt-3 text-xs text-[#8a8a8b] hover:text-[#e2e2e2] transition-colors"
+                >
+                  ↻ Refresh status
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : (
           /* ─── Chapters Mode ─── */
