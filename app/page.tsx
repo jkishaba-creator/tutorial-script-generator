@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link, History } from "lucide-react";
+import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link, History, RefreshCw } from "lucide-react";
 
 type Mode = "single" | "masterclass" | "chapters" | "factory";
 type ChapterBatchMode = "single" | "batch" | "multi-id";
