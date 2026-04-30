@@ -302,15 +302,18 @@ export default function Home() {
   const [isGeneratingChapters, setIsGeneratingChapters] = useState(false);
   const [chaptersCopied, setChaptersCopied] = useState(false);
 
-  // Batch specific state
+  // Dashboard queue state
+  const [manualFolders, setManualFolders] = useState<any[]>([]);
+  const [expandedManualFolderId, setExpandedManualFolderId] = useState<string | null>(null);
+  const [isAddingToQueue, setIsAddingToQueue] = useState(false);
+
+  // Multi-ID batch state
+  const [multiIdInput, setMultiIdInput] = useState("");
   const [batchFiles, setBatchFiles] = useState<BatchFile[]>([]);
   const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
   const [batchProgress, setBatchProgress] = useState("");
   const [batchComplete, setBatchComplete] = useState(false);
   const batchAbortRef = useRef(false);
-
-  // Multi-ID batch state
-  const [multiIdInput, setMultiIdInput] = useState("");
 
   // Sheets state
   const [spreadsheetId, setSpreadsheetId] = useState(() => {
@@ -365,6 +368,7 @@ export default function Home() {
   const [avaFolders, setAvaFolders] = useState<any[]>([]);
   const [avaExpandedId, setAvaExpandedId] = useState<string | null>(null);
   const [avaLoading, setAvaLoading] = useState<string | null>(null); // folderId currently actioning
+  const [isScanning, setIsScanning] = useState(false);
   const [avaMessage, setAvaMessage] = useState<string | null>(null);
 
   const masterclassSettingsReady =
@@ -431,9 +435,29 @@ export default function Home() {
     pollAvaFolders();
     avaInterval = setInterval(pollAvaFolders, 30000);
 
+    // Poll Manual folders
+    let manualInterval: NodeJS.Timeout;
+    const pollManualFolders = () => {
+      fetch("/api/manual-folders")
+        .then(res => res.json())
+        .then(data => {
+          if (data.folders) {
+            setManualFolders(data.folders);
+            // Faster polling if any folder is actively rendering
+            const hasActive = data.folders.some((f: any) => f.stage === "rendering");
+            clearInterval(manualInterval);
+            manualInterval = setInterval(pollManualFolders, hasActive ? 5000 : 15000);
+          }
+        })
+        .catch(() => {});
+    };
+    pollManualFolders();
+    manualInterval = setInterval(pollManualFolders, 15000);
+
     return () => {
       clearInterval(macStatusInterval);
       clearInterval(avaInterval);
+      clearInterval(manualInterval);
     };
   }, []);
 
@@ -911,22 +935,17 @@ export default function Home() {
     }
   };
 
-  const handleGenerateBatch = async () => {
+  const handleAddToQueue = async () => {
     if (!driveFolderId.trim()) {
       setError("Please enter a Google Drive Folder ID");
       return;
     }
 
-    setIsGeneratingBatch(true);
+    setIsAddingToQueue(true);
     setError(null);
-    setChapters("");
-    setBatchProgress("Fetching folder contents...");
-    setBatchFiles([]);
-    setBatchComplete(false);
-    batchAbortRef.current = false;
 
     try {
-      // 1. Fetch sorted list of videos from the folder
+      // 1. Fetch from Drive API
       const listResponse = await fetch(`/api/drive-folder?folderId=${encodeURIComponent(driveFolderId.trim())}`);
       if (!listResponse.ok) {
         const errorData = await listResponse.json();
@@ -934,101 +953,80 @@ export default function Home() {
       }
 
       const listData = await listResponse.json();
-      const files: BatchFile[] = (listData.files || []).map((f: any) => ({
+      const files = (listData.files || []).map((f: any) => ({
         id: f.id,
         name: f.name,
-        status: "pending",
       }));
 
       if (files.length === 0) {
         throw new Error("No video files found in the specified folder.");
       }
 
-      setBatchFiles(files);
-      setDriveFolderName(listData.folderName || "");
-      
-      // Auto-fill the tab name with Software Name + Folder Name
+      const fName = listData.folderName || "";
       const prefix = softwareName.trim() ? `${softwareName.trim()} ` : "";
-      setSheetsTabName(`${prefix}${listData.folderName || "Videos"}`);
+      const sTabName = `${prefix}${fName || "Videos"}`;
 
-      let aggregatedChapters = "";
+      // 2. Queue the export
+      const payload = {
+         folderId: driveFolderId.trim(),
+         folderName: fName,
+         sheetTabName: sTabName,
+         files: files
+      };
 
-      // 2. Loop through each file sequentially
-      for (let i = 0; i < files.length; i++) {
-        // Check for abort
-        if (batchAbortRef.current) {
-          setBatchProgress(`Batch stopped by user at Video ${i} of ${files.length}`);
-          break;
-        }
+      const res = await fetch("/api/queue-manual-export", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(payload)
+      });
 
-        const file = files[i];
-        
-        // Update status to processing
-        setBatchFiles((prev) => 
-          prev.map((f, idx) => idx === i ? { ...f, status: "processing" } : f)
-        );
-        setBatchProgress(`Processing Video ${i + 1} of ${files.length}`);
-
-        try {
-          const response = await fetch("/api/generate-chapters", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              driveFileId: file.id,
-              videoTitle: file.name.replace(/\.[^/.]+$/, ""), // strip extension for title
-            }),
-          });
-
-          if (!response.ok) {
-            const errorData = await response.json();
-            const errorCategory = errorData.errorCategory || "UNKNOWN";
-            throw Object.assign(
-              new Error(errorData.error || "Failed to generate chapters"),
-              { errorCategory }
-            );
-          }
-
-          const data = await response.json();
-          const newChapters = data.chapters;
-          
-          // Format and append to aggregated output
-          const block = `# ${data.title || file.name}\n${newChapters}\n\n`;
-          aggregatedChapters += block;
-          setChapters(aggregatedChapters);
-
-          // Mark success with all metadata
-          setBatchFiles((prev) => 
-            prev.map((f, idx) => idx === i ? { 
-              ...f, 
-              status: "success", 
-              chapters: newChapters,
-              title: data.title,
-              thumbnailText: data.thumbnailText,
-              tags: data.tags,
-              description: data.description,
-              sheetsStatus: "pending",
-            } : f)
-          );
-
-        } catch (err: any) {
-          // Catch individual video failure and continue loop
-          const errorMessage = err instanceof Error ? err.message : "Unknown error";
-          const errorCategory = err?.errorCategory || "UNKNOWN";
-          setBatchFiles((prev) => 
-            prev.map((f, idx) => idx === i ? { ...f, status: "error", error: errorMessage, errorCategory } : f)
-          );
-        }
+      if (!res.ok) {
+         const data = await res.json();
+         throw new Error(data.error || "Failed to queue folder");
       }
 
-      if (!batchAbortRef.current) {
-        setBatchProgress(`Batch processing complete!`);
-      }
+      // 3. Clear the input so they can add another
+      setDriveFolderId("");
+      
+      // Force an immediate refresh of the manual folders dashboard
+      fetch("/api/manual-folders")
+        .then(r => r.json())
+        .then(data => { if(data.folders) setManualFolders(data.folders); })
+        .catch(() => {});
+
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-      setBatchProgress("Batch failed.");
+      setError(err instanceof Error ? err.message : "Failed to add to queue.");
     } finally {
-      setIsGeneratingBatch(false);
-      setBatchComplete(true);
+      setIsAddingToQueue(false);
+    }
+  };
+
+  const handleRegenerateFailedFolder = async (folderId: string, folderName: string, sheetTabName: string) => {
+    try {
+      // Just re-trigger the queue-manual-export endpoint for this folder
+      // The backend handles looking it up and triggering an export action
+      await fetch("/api/queue-manual-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId, folderName, sheetTabName, files: [] }) // files array not needed if it exists
+      });
+      // Force refresh
+      fetch("/api/manual-folders").then(r => r.json()).then(data => { if(data.folders) setManualFolders(data.folders); });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleClearFolder = async (folderId: string) => {
+    try {
+      await fetch("/api/delete-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId })
+      });
+      setManualFolders(prev => prev.filter(f => f.folderId !== folderId));
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -2202,10 +2200,47 @@ export default function Home() {
           <div className="space-y-5">
             {/* iMac status + header */}
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-[#e2e2e2] flex items-center gap-2">
-                <span className="text-lg">🏭</span>
-                Ava — Upload Manager
-              </h2>
+              <div className="flex items-center gap-4">
+                <h2 className="text-base font-semibold text-[#e2e2e2] flex items-center gap-2">
+                  <span className="text-lg">🏭</span>
+                  Ava — Upload Manager
+                </h2>
+                <button
+                  disabled={isScanning}
+                  onClick={async () => {
+                    setIsScanning(true);
+                    setAvaMessage("📡 Triggering scan...");
+                    try {
+                      const res = await fetch("/api/factory-folders", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "scan" }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error);
+                      setAvaMessage(data.message);
+                      // Force a poll immediately after scan is triggered
+                      fetch("/api/factory-folders").then(r => r.json()).then(d => {
+                         if (d.folders) {
+                            setAvaFolders(d.folders);
+                         }
+                      });
+                    } catch (err: any) {
+                      setAvaMessage(`❌ ${err.message}`);
+                    } finally {
+                      setIsScanning(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded-[6px] bg-[#161618] border border-[#262626] text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#1a1a1c] transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isScanning ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <span className="text-[10px]">↻</span>
+                  )}
+                  {isScanning ? "Scanning..." : "Scan Google Drive"}
+                </button>
+              </div>
               <div className="flex items-center gap-2 text-xs text-[#8a8a8b]">
                 <div className={`w-2 h-2 rounded-full ${
                   !macStatus ? "bg-[#444]" :
@@ -2509,32 +2544,120 @@ export default function Home() {
 
                     <div className="flex items-center gap-2 pt-1">
                       <button
-                        onClick={handleGenerateBatch}
-                        disabled={isGeneratingBatch || !driveFolderId.trim() || isGeneratingChapters}
-                        className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 border-indigo-500"
+                        onClick={handleAddToQueue}
+                        disabled={isAddingToQueue || !driveFolderId.trim() || isGeneratingChapters}
+                        className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 border-indigo-500 disabled:opacity-50"
                       >
-                        {isGeneratingBatch ? (
+                        {isAddingToQueue ? (
                           <>
                             <Loader2 className="w-4 h-4 animate-spin" />
-                            Batch Running...
+                            Fetching & Queueing...
                           </>
                         ) : (
                           <>
                             <Layers className="w-4 h-4" />
-                            Process Entire Folder
+                            Add to Queue
                           </>
                         )}
                       </button>
-                      {isGeneratingBatch && (
-                        <button
-                          onClick={handleStopBatch}
-                          className="px-3 py-2 text-sm font-medium rounded-[6px] border border-red-900/50 bg-red-950/20 text-red-400 hover:bg-red-950/40 flex items-center gap-1.5"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                          Stop
-                        </button>
-                      )}
                     </div>
+
+                    {/* Manual Folders Dashboard */}
+                    {manualFolders.length > 0 && (
+                      <div className="mt-6 space-y-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-[11px] uppercase tracking-wider text-[#8a8a8b] font-medium flex items-center gap-2">
+                            <Layers className="w-3.5 h-3.5" />
+                            Spot Targeting Queue
+                          </h3>
+                        </div>
+                        {manualFolders.map((folder) => {
+                          const isExpanded = expandedManualFolderId === folder.folderId;
+                          const videos = folder.videoResults || [];
+                          const total = videos.length;
+                          const done = videos.filter((v: any) => v.metadataStatus === "done").length;
+                          const errors = videos.filter((v: any) => v.metadataStatus === "error").length;
+                          const processing = videos.filter((v: any) => v.metadataStatus === "pending").length;
+                          
+                          let statusLabel = "PENDING";
+                          let statusColor = "text-[#8a8a8b] bg-[#262626]";
+                          if (folder.stage === "exported" || folder.stage === "done") {
+                            statusLabel = "COMPLETE";
+                            statusColor = "text-emerald-400 bg-emerald-400/10";
+                          } else if (processing > 0 && done > 0) {
+                            statusLabel = "PROCESSING";
+                            statusColor = "text-blue-400 bg-blue-400/10";
+                          } else if (errors > 0 && processing === 0) {
+                            statusLabel = "ERRORS";
+                            statusColor = "text-red-400 bg-red-400/10";
+                          }
+
+                          return (
+                            <div key={folder.folderId} className="bg-[#111111] border border-[#262626] rounded-md overflow-hidden">
+                              <div 
+                                className="p-3 flex items-center justify-between cursor-pointer hover:bg-[#161618] transition-colors"
+                                onClick={() => setExpandedManualFolderId(isExpanded ? null : folder.folderId)}
+                              >
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-medium text-[#e2e2e2]">{folder.path}</span>
+                                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${statusColor}`}>
+                                      {statusLabel}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-[#8a8a8b] mt-1">
+                                    {done} / {total} Videos Generated
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  {(folder.stage === "exported" || folder.stage === "done") && errors > 0 && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleRegenerateFailedFolder(folder.folderId, folder.path, folder.sheetTabName); }}
+                                      className="px-2 py-1 text-[11px] font-medium text-amber-500 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 rounded flex items-center gap-1 transition-colors"
+                                    >
+                                      <RefreshCw className="w-3 h-3" /> Retry Failed
+                                    </button>
+                                  )}
+                                  {(folder.stage === "exported" || folder.stage === "done") && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleClearFolder(folder.folderId); }}
+                                      className="px-2 py-1 text-[11px] font-medium text-[#8a8a8b] hover:text-[#e2e2e2] flex items-center transition-colors"
+                                      title="Clear from Dashboard"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  {isExpanded ? <ChevronUp className="w-4 h-4 text-[#8a8a8b]" /> : <ChevronDown className="w-4 h-4 text-[#8a8a8b]" />}
+                                </div>
+                              </div>
+                              
+                              {isExpanded && (
+                                <div className="border-t border-[#262626] bg-[#0c0c0d] p-3 max-h-[300px] overflow-y-auto">
+                                  <div className="space-y-1">
+                                    {videos.map((vid: any) => (
+                                      <div key={vid.driveFileId} className="flex items-center justify-between py-1.5 border-b border-[#262626] last:border-0">
+                                        <div className="flex items-center gap-2 overflow-hidden flex-1 pr-4">
+                                          <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                            vid.metadataStatus === "done" ? "bg-emerald-500" :
+                                            vid.metadataStatus === "error" ? "bg-red-500" : "bg-[#8a8a8b]"
+                                          }`} />
+                                          <span className="text-xs text-[#e2e2e2] truncate">{vid.filename}</span>
+                                        </div>
+                                        {vid.metadataStatus === "error" && (
+                                          <div className="text-[10px] text-red-400 bg-red-400/10 px-2 py-0.5 rounded truncate max-w-[200px]" title={vid.metadataError}>
+                                            {vid.metadataError}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </>
                 ) : (
                   /* ── Multi-ID Batch Mode ── */
@@ -2686,8 +2809,8 @@ export default function Home() {
                       </div>
                     )}
 
-                    {/* Sheets Config & Commit — appears after batch completes */}
-                    {batchComplete && !isGeneratingBatch && batchFiles.some((f) => f.status === "success") && (
+                    {/* Sheets Config & Commit — ONLY for multi-id batch mode now */}
+                    {batchComplete && !isGeneratingBatch && batchFiles.some((f) => f.status === "success") && chapterMode === "multi-id" && (
                       <div className="pt-3 border-t border-[#262626] space-y-3">
                         <div className="text-[11px] uppercase tracking-wider text-[#e2e2e2] flex items-center gap-2 font-semibold">
                           <Sheet className="w-3.5 h-3.5 text-[#8a8a8b]" />
@@ -2718,30 +2841,37 @@ export default function Home() {
                               type="text"
                               value={sheetsTabName}
                               onChange={(e) => setSheetsTabName(e.target.value)}
-                              placeholder="e.g. Gemini Windows App Videos"
-                              className={`${inputBase} text-xs`}
+                              placeholder="e.g. Figma Videos"
+                              className={`${inputBase} font-mono text-xs`}
                               disabled={isCommittingToSheets}
                             />
                           </div>
                         </div>
 
-                        <button
-                          onClick={handleCommitToSheets}
-                          disabled={isCommittingToSheets || !spreadsheetId.trim() || !sheetsTabName.trim()}
-                          className="w-full px-4 py-2.5 text-sm font-medium rounded-[6px] bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                        >
-                          {isCommittingToSheets ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" />
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            onClick={handleCommitToSheets}
+                            disabled={isCommittingToSheets || !spreadsheetId.trim() || !sheetsTabName.trim()}
+                            className="ink-btn-primary px-4 py-2 text-sm font-medium flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 border-emerald-500 disabled:opacity-50"
+                          >
+                            {isCommittingToSheets ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Writing...
+                              </>
+                            ) : (
+                              <>
+                                <Sheet className="w-4 h-4" />
+                                Commit to Sheets
+                              </>
+                            )}
+                          </button>
+                          {sheetsProgress && (
+                            <span className="text-[11px] text-[#8a8a8b] uppercase tracking-wider">
                               {sheetsProgress}
-                            </>
-                          ) : (
-                            <>
-                              <Sheet className="w-4 h-4" />
-                              Commit Batch to Sheets ({batchFiles.filter((f) => f.status === "success").length} videos)
-                            </>
+                            </span>
                           )}
-                        </button>
+                        </div>
 
                         {/* Sheets write status */}
                         {batchFiles.some((f) => f.sheetsStatus && f.sheetsStatus !== "pending") && (

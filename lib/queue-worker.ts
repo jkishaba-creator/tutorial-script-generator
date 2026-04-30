@@ -572,8 +572,8 @@ async function handleExportAction(folderId: string) {
 
   // Write to Google Sheet
   try {
-    const tabName = `${folder.software} — ${folder.date}`;
-    const folderLink = folder.ytFolderLink || "";
+    const tabName = folder.sheetTabName || `${folder.software} — ${folder.date}`;
+    const folderLink = folder.ytFolderLink || `https://drive.google.com/drive/folders/${folder.folderId}`;
 
     await writeFolderBatch(spreadsheetId, tabName, folderLink, updatedResults);
 

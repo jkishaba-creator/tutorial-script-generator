@@ -15,7 +15,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const folders = await folderQueue.getFolders();
+    const allFolders = await folderQueue.getFolders();
+    const folders = allFolders.filter((f) => f.type !== "manual");
 
     // Enrich each folder with real-time job progress if it has a batchId
     const enriched = await Promise.all(

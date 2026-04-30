@@ -405,6 +405,7 @@ export interface KVFolder {
   exportedAt: string | null;
   doneAt: string | null;
   videoResults: VideoResult[] | null;
+  type?: "auto" | "manual";  // Manual folders are hidden from Ava UI
 }
 
 export type FolderAction =
