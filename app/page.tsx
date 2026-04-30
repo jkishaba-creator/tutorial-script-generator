@@ -1005,7 +1005,7 @@ export default function Home() {
 
       const fName = listData.folderName || "";
       const prefix = softwareName.trim() ? `${softwareName.trim()} ` : "";
-      const sTabName = `${prefix}${fName || "Videos"}`;
+      const sTabName = sheetsTabName.trim() ? sheetsTabName.trim() : `${prefix}${fName || "Videos"}`;
 
       // 2. Queue the export
       const payload = {
@@ -1028,6 +1028,7 @@ export default function Home() {
 
       // 3. Clear the input so they can add another
       setDriveFolderId("");
+      setSheetsTabName("");
       
       // Force an immediate refresh of the manual folders dashboard
       fetch("/api/manual-folders")
@@ -2581,6 +2582,21 @@ export default function Home() {
                       <p className="mt-1 text-[11px] uppercase tracking-wider text-[#8a8a8b]">
                         From the Drive Folder URL: drive.google.com/drive/folders/<strong>THIS_PART</strong>
                       </p>
+                    </div>
+
+                    <div>
+                      <label htmlFor="sheetsTabName" className={labelClass}>
+                        Google Sheets Tab Name (optional)
+                      </label>
+                      <input
+                        id="sheetsTabName"
+                        type="text"
+                        value={sheetsTabName}
+                        onChange={(e) => setSheetsTabName(e.target.value)}
+                        placeholder="Leave blank to auto-name from Drive"
+                        className={inputBase}
+                        disabled={isAddingToQueue}
+                      />
                     </div>
 
                     <div className="flex items-center gap-2 pt-1">
