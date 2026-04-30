@@ -247,24 +247,31 @@ export async function writeFolderBatch(
   }
 
   // Build rows
-  const headerRow = ["📁 YouTube Drive Folder", folderLink ? `=HYPERLINK("${folderLink}", "Open Folder")` : ""];
-  const columnHeaders = ["#", "Filename", "Title", "Thumbnail Text", "Chapters", "Description", "Tags"];
-  const dataRows = sorted.map((v, i) => [
-    i + 1,
-    v.filename,
-    v.title || "",
-    v.thumbnailText || "",
-    v.chapters || "",
-    v.description || "",
-    v.tags || "",
-  ]);
+  const headerRow = ["📁 YouTube Drive Folder", folderLink ? `=HYPERLINK("${folderLink}", "Open Folder")` : "", ""];
+  const columnHeaders = ["Title", "Thumbnail Text", "Combined Text"];
+  const dataRows = sorted.map((v) => {
+    const parts = [
+      v.title || v.filename,
+      v.description || "",
+      v.chapters || "",
+      v.tags ? `Hashtags\n\n${v.tags}` : ""
+    ].filter(p => p.trim() !== "");
+    
+    const combinedContent = parts.join("\n\n");
+
+    return [
+      v.title || v.filename,
+      v.thumbnailText || "",
+      combinedContent,
+    ];
+  });
 
   const allRows = [headerRow, columnHeaders, ...dataRows];
 
   // Write all rows at once
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${tabName}'!A1:G${allRows.length}`,
+    range: `'${tabName}'!A1:C${allRows.length}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: allRows,
@@ -293,13 +300,9 @@ export async function writeFolderBatch(
           },
         },
         // Column widths
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 40 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 350 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 }, properties: { pixelSize: 200 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 4, endIndex: 5 }, properties: { pixelSize: 400 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 6 }, properties: { pixelSize: 400 }, fields: "pixelSize" } },
-        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 6, endIndex: 7 }, properties: { pixelSize: 250 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 200 }, fields: "pixelSize" } },
+        { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 600 }, fields: "pixelSize" } },
       ],
     },
   });
