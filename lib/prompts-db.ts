@@ -197,16 +197,45 @@ export const DEFAULT_DB: PromptsDB = {
   version: 3
 };
 
+import { Redis } from "@upstash/redis";
+
 const DB_PATH = path.join(process.cwd(), "data", "prompts.json");
 
-export function getPromptsDB(): PromptsDB {
+// Helper to get Redis client if available
+function getRedisClient() {
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    return new Redis({
+      url: process.env.KV_REST_API_URL,
+      token: process.env.KV_REST_API_TOKEN,
+    });
+  }
+  return null;
+}
+
+export async function getPromptsDB(): Promise<PromptsDB> {
   try {
-    if (!fs.existsSync(DB_PATH)) {
-      savePromptsDB(DEFAULT_DB);
+    const redis = getRedisClient();
+    let raw: string | null = null;
+    let parsed: any = null;
+
+    if (redis) {
+      // Load from KV
+      const data = await redis.get("prompts:current");
+      if (data) {
+        parsed = typeof data === "string" ? JSON.parse(data) : data;
+      }
+    } else {
+      // Load from FS
+      if (fs.existsSync(DB_PATH)) {
+        raw = fs.readFileSync(DB_PATH, "utf-8");
+        parsed = JSON.parse(raw);
+      }
+    }
+
+    if (!parsed) {
+      await savePromptsDB(DEFAULT_DB);
       return DEFAULT_DB;
     }
-    const raw = fs.readFileSync(DB_PATH, "utf-8");
-    const parsed = JSON.parse(raw);
 
     // Migration logic: if the parsed file is an array, it's the old schema
     if (Array.isArray(parsed)) {
@@ -229,9 +258,10 @@ export function getPromptsDB(): PromptsDB {
         migratedDB.presets.push(DEFAULT_DB.presets[1]);
       }
       
-      savePromptsDB(migratedDB);
+      await savePromptsDB(migratedDB);
       return migratedDB;
     }
+
     // V2 → V3 migration: replace factory default sections, add pauseTokens
     if (!Array.isArray(parsed) && (!parsed.version || parsed.version < 3)) {
       const db = parsed as PromptsDB;
@@ -249,7 +279,7 @@ export function getPromptsDB(): PromptsDB {
         db.pauseTokens = DEFAULT_DB.pauseTokens;
       }
       db.version = 3;
-      savePromptsDB(db);
+      await savePromptsDB(db);
       return db;
     }
 
@@ -260,42 +290,89 @@ export function getPromptsDB(): PromptsDB {
   }
 }
 
-export function savePromptsDB(db: PromptsDB): void {
-  const tmpPath = `${DB_PATH}.tmp`;
-  
-  // Ensure the data directory exists
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+export interface PromptVersion {
+  timestamp: string;
+  db: PromptsDB;
+}
 
-  try {
-    // POSIX Atomic Write
-    fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), "utf-8");
+export async function savePromptsDB(db: PromptsDB): Promise<void> {
+  const redis = getRedisClient();
 
-    // Manage 10 rolling backups before overwriting the main file
-    if (fs.existsSync(DB_PATH)) {
-      // Shift backups: 9 -> 10, 8 -> 9, ..., 1 -> 2
-      for (let i = 9; i >= 1; i--) {
-        const oldBackup = `${DB_PATH}.bak${i}`;
-        const newBackup = `${DB_PATH}.bak${i + 1}`;
-        if (fs.existsSync(oldBackup)) {
-          fs.renameSync(oldBackup, newBackup);
-        }
-      }
-      // Current DB becomes .bak1
-      fs.copyFileSync(DB_PATH, `${DB_PATH}.bak1`);
+  if (redis) {
+    // KV Storage: manage history array
+    const current = await redis.get("prompts:current");
+    if (current) {
+      let history: PromptVersion[] = (await redis.get("prompts:history")) || [];
+      // Push current to history
+      history.unshift({
+        timestamp: new Date().toISOString(),
+        db: typeof current === "string" ? JSON.parse(current) : current
+      });
+      // Keep last 10 versions
+      history = history.slice(0, 10);
+      await redis.set("prompts:history", history);
+    }
+    await redis.set("prompts:current", db);
+  } else {
+    // Local FS Storage: manage .bak files
+    const tmpPath = `${DB_PATH}.tmp`;
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
 
-    fs.renameSync(tmpPath, DB_PATH);
-  } catch (err) {
-    console.error("Failed atomic write for prompts.json:", err);
-    throw err;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), "utf-8");
+
+      // Manage 10 rolling backups before overwriting the main file
+      if (fs.existsSync(DB_PATH)) {
+        for (let i = 9; i >= 1; i--) {
+          const oldBackup = `${DB_PATH}.bak${i}`;
+          const newBackup = `${DB_PATH}.bak${i + 1}`;
+          if (fs.existsSync(oldBackup)) {
+            fs.renameSync(oldBackup, newBackup);
+          }
+        }
+        fs.copyFileSync(DB_PATH, `${DB_PATH}.bak1`);
+      }
+
+      fs.renameSync(tmpPath, DB_PATH);
+    } catch (err) {
+      console.error("Failed atomic write for prompts.json:", err);
+      throw err;
+    }
   }
 }
 
-export function resetToDefaults(): PromptsDB {
-  savePromptsDB(DEFAULT_DB);
+export async function getPromptsHistory(): Promise<PromptVersion[]> {
+  const redis = getRedisClient();
+  if (redis) {
+    const history = await redis.get("prompts:history");
+    return (history as PromptVersion[]) || [];
+  }
+  
+  // Local fallback: read .bak files
+  const history: PromptVersion[] = [];
+  for (let i = 1; i <= 10; i++) {
+    const bakPath = `${DB_PATH}.bak${i}`;
+    if (fs.existsSync(bakPath)) {
+      try {
+        const stats = fs.statSync(bakPath);
+        const raw = fs.readFileSync(bakPath, "utf-8");
+        history.push({
+          timestamp: stats.mtime.toISOString(),
+          db: JSON.parse(raw)
+        });
+      } catch (err) {
+        console.error(`Error reading backup ${i}:`, err);
+      }
+    }
+  }
+  return history;
+}
+
+export async function resetToDefaults(): Promise<PromptsDB> {
+  await savePromptsDB(DEFAULT_DB);
   return DEFAULT_DB;
 }
 

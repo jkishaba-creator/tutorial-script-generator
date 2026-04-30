@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
     );
     const dataBlock = dataBlockLines.join("\n\n---\n\n");
     
-    const db = getPromptsDB();
+    const db = await getPromptsDB();
     const presetId = body.presetId;
     
     let preset = db.presets.find(p => p.id === presetId);

@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
 
     const wordCountRange = `${minWordCount}-${maxWordCount}`;
     
-    const db = getPromptsDB();
+    const db = await getPromptsDB();
     
     let preset = db.presets.find(p => p.id === presetId);
     if (!preset) {

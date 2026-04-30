@@ -28,44 +28,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import {
-  crawlUploadsDrive,
-  ensureYouTubePath,
-  downloadFile,
-  uploadFile,
-  verifyUploadExists,
-  purgeIfOld,
-  buildFinishedFilename,
-} from "@/lib/drive-crawler";
-import { processVideo } from "@/lib/video-processor";
-
-import {
-  getQueue,
-  initBatchProgress,
-  updateJobProgress,
-  cleanupBatchProgress,
-  type JobProgress,
-} from "@/lib/job-queue";
-import fs from "fs";
-import path from "path";
+import { crawlUploadsDrive } from "@/lib/drive-crawler";
+import { jobQueueDB } from "@/lib/job-queue-db";
+import { startQueueWorker } from "@/lib/queue-worker";
 import crypto from "crypto";
-import os from "os";
 
-// ── Helpers ─────────────────────────────────────────────────────────
-
-/**
- * Safely delete a local file if it exists.
- */
-function cleanupFile(filePath: string): void {
-  try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log(`Cleaned up: ${filePath}`);
-    }
-  } catch (err) {
-    console.warn(`Failed to cleanup ${filePath}:`, err);
-  }
-}
+// Helpers removed (moved to queue-worker.ts)
 
 // ── Route Handler ───────────────────────────────────────────────────
 
@@ -110,153 +78,21 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // ── Generate batch ID and initialize progress ─────────────────
+    // ── Generate batch ID and enqueue to SQLite ─────────────────
     const batchId = crypto.randomUUID();
 
-    const jobProgressList: JobProgress[] = crawlResult.jobs.map((j, i) => ({
-      jobId: crypto.randomUUID(),
-      videoName: `${j.producerName}/${j.softwareName}/${j.dateFolder}/${j.videoFile.name}`,
-      status: "queued" as const,
-      renderPercent: 0,
-      batchPosition: `${i + 1}/${crawlResult.jobs.length}`,
-    }));
-
-    initBatchProgress(batchId, jobProgressList);
-
-    // ── Queue all jobs ────────────────────────────────────────────
-    const queue = getQueue();
-
-    for (let i = 0; i < crawlResult.jobs.length; i++) {
-      const job = crawlResult.jobs[i];
-      const progress = jobProgressList[i];
-
-      queue.add(async () => {
-        const finishedName = buildFinishedFilename(job.producerName, job.videoFile.name, job.version);
-
-        // Local temp paths
-        const tmpDir = path.join(os.tmpdir(), "nightshift", batchId);
-        if (!fs.existsSync(tmpDir)) {
-          fs.mkdirSync(tmpDir, { recursive: true });
-        }
-
-        const localVideoPath = path.join(tmpDir, `raw_${job.videoFile.name}`);
-        const localAudioPath = path.join(tmpDir, `raw_${job.audioFile.name}`);
-        const localOutputPath = path.join(tmpDir, finishedName);
-
-        try {
-          // ── Download ──────────────────────────────────────────────
-          updateJobProgress(batchId, progress.jobId, { status: "downloading" });
-          console.log(`Downloading: ${job.producerName}/${job.softwareName}/${job.dateFolder}/${job.videoFile.name}`);
-
-          await downloadFile(job.videoFile.id, localVideoPath);
-          await downloadFile(job.audioFile.id, localAudioPath);
-
-          // ── FFmpeg Process ────────────────────────────────────────
-          updateJobProgress(batchId, progress.jobId, { status: "processing" });
-          console.log(`Processing: ${finishedName}`);
-
-          const result = await processVideo({
-            inputVideoPath: localVideoPath,
-            inputAudioPath: localAudioPath,
-            outputPath: localOutputPath,
-            onProgress: (percent) => {
-              updateJobProgress(batchId, progress.jobId, { renderPercent: percent });
-            },
-          });
-
-          // ── Upload to YouTube Drive ───────────────────────────────
-          updateJobProgress(batchId, progress.jobId, { status: "uploading" });
-
-          // Ensure YouTube/Software/Date/ path exists
-          const ytDateFolderId = await ensureYouTubePath(
-            youtubeDriveId,
-            job.softwareName,
-            job.dateFolder
-          );
-
-          // Use REVIEW_ prefix if duration mismatch detected
-          const uploadName = result.needsReview
-            ? `REVIEW_${finishedName}`
-            : finishedName;
-
-          if (result.needsReview) {
-            console.warn(`⚠️ Duration mismatch for ${job.videoFile.name}: ${result.reviewReason}`);
-          }
-
-          await uploadFile(localOutputPath, uploadName, ytDateFolderId);
-
-          // ── Watertight Verification ───────────────────────────────
-          // Re-query Drive to confirm the upload actually landed
-          const uploadVerified = await verifyUploadExists(ytDateFolderId, uploadName);
-
-          if (!uploadVerified) {
-            throw new Error(
-              `Upload verification failed: ${uploadName} not found in YouTube/${job.softwareName}/${job.dateFolder}/`
-            );
-          }
-
-          console.log(`✅ Verified: ${uploadName} in YouTube/${job.softwareName}/${job.dateFolder}/`);
-
-
-          // ── 48-Hour Purge ─────────────────────────────────────────
-          // Only purge AFTER watertight verification
-          try {
-            const videoPurged = await purgeIfOld(job.videoFile.id, job.videoFile.createdTime);
-            const audioPurged = await purgeIfOld(job.audioFile.id, job.audioFile.createdTime);
-            if (videoPurged) console.log(`🗑️ Purged raw video: ${job.videoFile.name}`);
-            if (audioPurged) console.log(`🗑️ Purged raw audio: ${job.audioFile.name}`);
-          } catch (purgeErr) {
-            // Purge failure should not fail the job
-            console.warn(`Purge warning for ${job.videoFile.name}:`, purgeErr);
-          }
-
-          updateJobProgress(batchId, progress.jobId, {
-            status: "done",
-            renderPercent: 100,
-          });
-
-          console.log(`✅ Finished: ${uploadName}`);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`❌ Failed: ${job.videoFile.name} — ${message}`);
-          updateJobProgress(batchId, progress.jobId, {
-            status: "error",
-            error: message,
-          });
-        } finally {
-          // ── Hard Disk Cleanup ──────────────────────────────────────
-          cleanupFile(localVideoPath);
-          cleanupFile(localAudioPath);
-          cleanupFile(localOutputPath);
-
-          // Remove temp dir if empty
-          try {
-            const remaining = fs.readdirSync(tmpDir);
-            if (remaining.length === 0) {
-              fs.rmdirSync(tmpDir);
-            }
-          } catch {
-            // ignore
-          }
-        }
+    for (const job of crawlResult.jobs) {
+      jobQueueDB.addJob({
+        id: crypto.randomUUID(),
+        batchId,
+        videoName: `${job.producerName}/${job.softwareName}/${job.dateFolder}/${job.videoFile.name}`,
+        fileMetaJson: JSON.stringify(job),
       });
     }
 
-    // Schedule progress cleanup when batch completes
-    queue.onIdle().then(async () => {
-      console.log(`Batch ${batchId} complete.`);
-      cleanupBatchProgress(batchId);
-
-      // Send Discord summary
-      const { sendDiscordNotification } = await import("@/lib/discord-webhook");
-      const summaryMessage = `
-✅ **Processed:** ${crawlResult.jobs.length} videos
-⏭️ **Skipped:** ${crawlResult.skipped} (already in YouTube drive)
-❌ **Errors:** ${crawlResult.errors.length}
-      `.trim();
-      
-      await sendDiscordNotification("🏭 Night Shift Complete", summaryMessage, 0x00FF00);
-    });
+    // ── Kick off the background worker ────────────────────────────
+    // It runs asynchronously without blocking the response
+    startQueueWorker().catch(console.error);
 
     return NextResponse.json({
       batchId,

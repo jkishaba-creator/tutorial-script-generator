@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Apply Pronunciation Table
-    const db = getPromptsDB();
+    const db = await getPromptsDB();
     // Strip asterisks to prevent TTS from reading them out loud
     let processedText = text.replace(/\*/g, '');
     if (db.pronunciationTable && db.pronunciationTable.length > 0) {

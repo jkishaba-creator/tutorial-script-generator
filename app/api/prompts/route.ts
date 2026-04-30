@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPromptsDB, savePromptsDB, resetToDefaults, PromptPreset, PromptsDB, PronunciationEntry } from "@/lib/prompts-db";
+import { getPromptsDB, savePromptsDB, resetToDefaults, getPromptsHistory, PromptPreset, PromptsDB, PronunciationEntry } from "@/lib/prompts-db";
 
 // Checks if required variables are missing across all sections/content
 function getMissingVars(preset: PromptPreset): string[] {
@@ -25,7 +25,7 @@ function getMissingVars(preset: PromptPreset): string[] {
 
 export async function GET() {
   try {
-    const db = getPromptsDB();
+    const db = await getPromptsDB();
     // Return both formats for backwards compatibility while frontend updates
     return NextResponse.json({ db, presets: db.presets });
   } catch (err) {
@@ -36,7 +36,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const payload = await req.json();
-    const db = getPromptsDB();
+    const db = await getPromptsDB();
     
     // Action-based routing
     const action = payload.action || "savePreset";
@@ -65,18 +65,31 @@ export async function POST(req: NextRequest) {
         db.presets.push(preset);
       }
 
-      savePromptsDB(db);
+      await savePromptsDB(db);
       return NextResponse.json({ db, presets: db.presets, savedId: preset.id, missingVars });
 
     } else if (action === "saveGlobalRules") {
       db.globalRules = payload.globalRules ?? "";
-      savePromptsDB(db);
+      await savePromptsDB(db);
       return NextResponse.json({ db });
 
     } else if (action === "savePronunciations") {
       db.pronunciationTable = payload.pronunciationTable || [];
-      savePromptsDB(db);
+      await savePromptsDB(db);
       return NextResponse.json({ db });
+
+    } else if (action === "getHistory") {
+      const history = await getPromptsHistory();
+      return NextResponse.json({ history });
+
+    } else if (action === "restoreVersion") {
+      const history = await getPromptsHistory();
+      const version = history[payload.index];
+      if (!version) {
+        return NextResponse.json({ error: "Version not found" }, { status: 404 });
+      }
+      await savePromptsDB(version.db);
+      return NextResponse.json({ db: version.db });
 
     } else {
       return NextResponse.json({ error: "Unknown action" }, { status: 400 });
@@ -89,7 +102,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE() {
   try {
-    const resetDB = resetToDefaults();
+    const resetDB = await resetToDefaults();
     return NextResponse.json({ db: resetDB, presets: resetDB.presets });
   } catch (err) {
     return NextResponse.json({ error: "Failed to reset presets" }, { status: 500 });

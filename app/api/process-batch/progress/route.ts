@@ -14,7 +14,7 @@
  */
 
 import { NextRequest } from "next/server";
-import { getBatchProgress } from "@/lib/job-queue";
+import { jobQueueDB } from "@/lib/job-queue-db";
 
 export const dynamic = "force-dynamic";
 
@@ -50,14 +50,24 @@ export async function GET(request: NextRequest) {
             return;
           }
 
-          const jobs = getBatchProgress(batchId);
+          const dbJobs = jobQueueDB.getJobsByBatch(batchId);
 
-          if (!jobs) {
+          if (!dbJobs || dbJobs.length === 0) {
             send({ event: "not_found", message: "Batch not found or already cleaned up" });
             clearInterval(interval);
             controller.close();
             return;
           }
+
+          // Map DB jobs to the frontend's expected JobProgress interface
+          const jobs = dbJobs.map((j, i) => ({
+            jobId: j.id,
+            videoName: j.videoName,
+            status: j.status === "pending" ? "queued" : j.status,
+            renderPercent: j.renderPercent,
+            error: j.errorMessage || undefined,
+            batchPosition: `${i + 1}/${dbJobs.length}`
+          }));
 
           // Build summary
           const summary = {

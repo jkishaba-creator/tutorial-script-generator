@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link } from "lucide-react";
+import { Loader2, Play, Download, FileText, Mic, Plus, Trash2, Layers, Settings, LayoutList, Target, Check, Lock, X, Video, Copy, AlertTriangle, Square, Sheet, ChevronDown, ChevronUp, Link, History } from "lucide-react";
 
 type Mode = "single" | "masterclass" | "chapters";
 type ChapterBatchMode = "single" | "batch" | "multi-id";
@@ -328,7 +328,9 @@ export default function Home() {
   const [collapsedInstructions, setCollapsedInstructions] = useState<boolean[]>([]);
 
   // Prompt Preset state
-  const [showPromptSettings, setShowPromptSettings] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyData, setHistoryData] = useState<any[]>([]);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [presets, setPresets] = useState<PromptPreset[]>([]);
   const [globalRules, setGlobalRules] = useState<string>("");
   const [activeSoloPresetId, setActiveSoloPresetId] = useState<string | null>(null);
@@ -1079,11 +1081,42 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (showPromptSettings) {
-      setEditingPreset(null);
-      setPromptSaveError(null);
+    if (showHistoryModal) {
+      fetch("/api/prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "getHistory" })
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d.history) setHistoryData(d.history);
+      })
+      .catch(console.error);
     }
-  }, [showPromptSettings]);
+  }, [showHistoryModal]);
+
+  const handleRestoreVersion = async (index: number) => {
+    if (!confirm("Are you sure you want to restore this version? All current presets will be overwritten.")) return;
+    setIsRestoring(true);
+    try {
+      const res = await fetch("/api/prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restoreVersion", index })
+      });
+      const data = await res.json();
+      if (data.db) {
+        setPresets(data.db.presets || []);
+        setGlobalRules(data.db.globalRules || "");
+        setShowHistoryModal(false);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to restore version.");
+    } finally {
+      setIsRestoring(false);
+    }
+  };
 
   const handleCommitToSheets = async () => {
     if (!spreadsheetId.trim()) {
@@ -1278,11 +1311,11 @@ export default function Home() {
             </button>
             <button
               type="button"
-              onClick={() => setShowPromptSettings(true)}
+              onClick={() => setShowHistoryModal(true)}
               className="px-3 py-2 text-sm font-medium rounded-[6px] border border-transparent text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#161618] hover:border-[#262626] transition-colors flex items-center gap-1.5 ml-2"
             >
-              <Settings className="w-3.5 h-3.5" />
-              Prompts
+              <History className="w-3.5 h-3.5" />
+              History
             </button>
           </div>
           <button
@@ -2529,6 +2562,61 @@ export default function Home() {
         </div>
         )}
       </div>
+
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-2xl bg-[#111111] border border-[#262626] rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="px-6 py-4 border-b border-[#262626] flex items-center justify-between bg-[#161618]">
+              <h2 className="text-lg font-semibold text-[#e2e2e2] flex items-center gap-2">
+                <History className="w-5 h-5 text-emerald-400" />
+                Prompt Version History
+              </h2>
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="p-2 rounded-lg text-[#8a8a8b] hover:text-[#e2e2e2] hover:bg-[#262626] transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto">
+              <p className="text-sm text-[#8a8a8b] mb-4">
+                The last 10 versions of your presets are saved here. Restoring a version will completely overwrite your current presets and rules.
+              </p>
+              
+              {historyData.length === 0 ? (
+                <div className="text-center py-8 text-[#8a8a8b] text-sm">
+                  No history available yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {historyData.map((v, i) => (
+                    <div key={i} className="p-4 border border-[#262626] rounded-lg bg-[#0c0c0d] flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium text-[#e2e2e2]">
+                          Version {historyData.length - i}
+                        </div>
+                        <div className="text-xs text-[#8a8a8b] mt-1">
+                          Saved: {new Date(v.timestamp).toLocaleString()}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleRestoreVersion(i)}
+                        disabled={isRestoring}
+                        className="px-4 py-2 text-xs font-medium rounded-[6px] border border-[#262626] bg-[#161618] text-[#e2e2e2] hover:bg-[#1a1a1c] disabled:opacity-50 flex items-center gap-2"
+                      >
+                        {isRestoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <History className="w-3.5 h-3.5" />}
+                        Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   );
 }
